@@ -10,12 +10,19 @@ private:
 	virtual void Update(const GameTimer& gt)override;
 	virtual void Draw(const GameTimer& gt)override;
 	void LoadTextures();
+	void BuildBuffers();
 	void BuildRootSignature();
 	void BuildDescriptorHeaps();
+	void BuildShadersAndInputLayout();
+	void BuildPSOs();
 	std::array<const CD3DX12_STATIC_SAMPLER_DESC, 6> GetStaticSamplers();
 	std::unordered_map<std::string, std::unique_ptr<Texture>> mTextures;
+	std::unordered_map<std::string, ComPtr<ID3DBlob>> mShaders;
+	std::unordered_map<std::string, ComPtr<ID3D12PipelineState>> mPSOs;
+	ComPtr<ID3D12Resource> mOutputBuffer = nullptr;
 	ComPtr<ID3D12RootSignature> mRootSignature = nullptr;
 	ComPtr<ID3D12DescriptorHeap> mSrvDescriptorHeap = nullptr;
+	ComPtr<ID3D12PipelineState> mPSO = nullptr;
 	UINT mCbvSrvDescriptorSize = 0;
 	Camera mCamera;
 };
@@ -37,16 +44,17 @@ bool RayTracingApp::Initialize()
 	mCamera.SetPosition(0.0f, 2.0f, -15.0f);
 
 	LoadTextures();
+	BuildBuffers();
 	BuildRootSignature();
 	BuildDescriptorHeaps();
-	/*	BuildShadersAndInputLayout();
-	BuildShapeGeometry();
+	BuildShadersAndInputLayout();
+	/*	BuildShapeGeometry();
 	BuildSkullGeometry();
 	BuildMaterials();
 	BuildRenderItems();
 	BuildFrameResources();
-	BuildPSOs();*/
-
+*/
+	BuildPSOs();
 	// Execute the initialization commands.
 	ThrowIfFailed(mCommandList->Close());
 	ID3D12CommandList* cmdsLists[] = { mCommandList.Get() };
@@ -65,13 +73,34 @@ void RayTracingApp::LoadTextures()
 	ThrowIfFailed(DirectX::CreateDDSTextureFromFile12(md3dDevice.Get(), mCommandList.Get(), texMap->Filename.c_str(), texMap->Resource, texMap->UploadHeap));
 	mTextures[texMap->Name] = std::move(texMap);
 }
+void RayTracingApp::BuildBuffers()
+{
+	D3D12_RESOURCE_DESC texDesc;
+	ZeroMemory(&texDesc, sizeof(D3D12_RESOURCE_DESC));
+	texDesc.Dimension = D3D12_RESOURCE_DIMENSION_TEXTURE2D;
+	texDesc.Alignment = 0;
+	texDesc.Width = mClientWidth;
+	texDesc.Height = mClientHeight;
+	texDesc.DepthOrArraySize = 1;
+	texDesc.MipLevels = 1;
+	texDesc.Format = DXGI_FORMAT_R8G8B8A8_UNORM;
+	texDesc.SampleDesc.Count = 1;
+	texDesc.SampleDesc.Quality = 0;
+	texDesc.Layout = D3D12_TEXTURE_LAYOUT_UNKNOWN;
+	texDesc.Flags = D3D12_RESOURCE_FLAG_ALLOW_UNORDERED_ACCESS;
+
+	ThrowIfFailed(md3dDevice->CreateCommittedResource(
+		&CD3DX12_HEAP_PROPERTIES(D3D12_HEAP_TYPE_DEFAULT),
+		D3D12_HEAP_FLAG_NONE,
+		&texDesc,
+		D3D12_RESOURCE_STATE_COMMON,
+		nullptr,
+		IID_PPV_ARGS(&mOutputBuffer)));
+}
 void RayTracingApp::BuildRootSignature()
 {
-	CD3DX12_DESCRIPTOR_RANGE texTable0;
-	texTable0.Init(D3D12_DESCRIPTOR_RANGE_TYPE_SRV, 1, 0, 0);
-
-	CD3DX12_DESCRIPTOR_RANGE texTable1;
-	texTable1.Init(D3D12_DESCRIPTOR_RANGE_TYPE_SRV, 5, 1, 0);
+	CD3DX12_DESCRIPTOR_RANGE texTable;
+	texTable.Init(D3D12_DESCRIPTOR_RANGE_TYPE_SRV, 1, 0, 0);
 
 	// Root parameter can be a table, root descriptor or root constants.
 	CD3DX12_ROOT_PARAMETER slotRootParameter[5];
@@ -80,8 +109,8 @@ void RayTracingApp::BuildRootSignature()
 	slotRootParameter[0].InitAsConstantBufferView(0);
 	slotRootParameter[1].InitAsConstantBufferView(1);
 	slotRootParameter[2].InitAsShaderResourceView(0, 1);
-	slotRootParameter[3].InitAsDescriptorTable(1, &texTable0, D3D12_SHADER_VISIBILITY_PIXEL);
-	slotRootParameter[4].InitAsDescriptorTable(1, &texTable1, D3D12_SHADER_VISIBILITY_PIXEL);
+	slotRootParameter[3].InitAsDescriptorTable(1, &texTable, D3D12_SHADER_VISIBILITY_PIXEL);
+	slotRootParameter[4].InitAsUnorderedAccessView(0);
 
 
 	auto staticSamplers = GetStaticSamplers();
@@ -134,12 +163,61 @@ void RayTracingApp::BuildDescriptorHeaps()
 	srvDesc.Format = skyTex->GetDesc().Format;
 	md3dDevice->CreateShaderResourceView(skyTex.Get(), &srvDesc, hDescriptor);
 }
-
+void RayTracingApp::BuildShadersAndInputLayout()
+{
+	mShaders["RayTracing"] = d3dUtil::CompileShader(L"Shaders\\RayTracing.hlsl", nullptr, "CS", "cs_5_0");
+}
+void RayTracingApp::BuildPSOs()
+{
+	D3D12_COMPUTE_PIPELINE_STATE_DESC computePsoDesc = {};
+	computePsoDesc.pRootSignature = mRootSignature.Get();
+	computePsoDesc.CS =
+	{
+		reinterpret_cast<BYTE*>(mShaders["RayTracing"]->GetBufferPointer()),
+		mShaders["RayTracing"]->GetBufferSize()
+	};
+	computePsoDesc.Flags = D3D12_PIPELINE_STATE_FLAG_NONE;
+	ThrowIfFailed(md3dDevice->CreateComputePipelineState(&computePsoDesc, IID_PPV_ARGS(&mPSOs["RayTracing"])));
+}
 void RayTracingApp::Update(const GameTimer& gt)
 {
 }
 void RayTracingApp::Draw(const GameTimer& gt)
 {
+	// Reuse the memory associated with command recording.
+	// We can only reset when the associated command lists have finished execution on the GPU.
+	ThrowIfFailed(mDirectCmdListAlloc->Reset());
+
+	// A command list can be reset after it has been added to the command queue via ExecuteCommandList.
+	// Reusing the command list reuses memory.
+	ThrowIfFailed(mCommandList->Reset(mDirectCmdListAlloc.Get(), mPSOs["RayTracing"].Get()));
+
+	mCommandList->SetComputeRootSignature(mRootSignature.Get());
+
+//	mCommandList->SetComputeRootShaderResourceView(0, mInputBufferA->GetGPUVirtualAddress());
+//	mCommandList->SetComputeRootShaderResourceView(1, mInputBufferB->GetGPUVirtualAddress());
+	mCommandList->SetComputeRootUnorderedAccessView(4, mOutputBuffer->GetGPUVirtualAddress());
+
+	mCommandList->Dispatch((UINT)ceilf(mClientWidth / 8.f), (UINT)ceilf(mClientHeight / 8.f), 1);
+
+	// Schedule to copy the data to the default buffer to the readback buffer.
+	mCommandList->ResourceBarrier(1, &CD3DX12_RESOURCE_BARRIER::Transition(mOutputBuffer.Get(),
+		D3D12_RESOURCE_STATE_COMMON, D3D12_RESOURCE_STATE_COPY_SOURCE));
+
+	mCommandList->CopyResource(CurrentBackBuffer(), mOutputBuffer.Get());
+
+	mCommandList->ResourceBarrier(1, &CD3DX12_RESOURCE_BARRIER::Transition(mOutputBuffer.Get(),
+		D3D12_RESOURCE_STATE_COPY_SOURCE, D3D12_RESOURCE_STATE_COMMON));
+
+	// Done recording commands.
+	ThrowIfFailed(mCommandList->Close());
+
+	// Add the command list to the queue for execution.
+	ID3D12CommandList* cmdsLists[] = { mCommandList.Get() };
+	mCommandQueue->ExecuteCommandLists(_countof(cmdsLists), cmdsLists);
+	ThrowIfFailed(mSwapChain->Present(0, 0));
+	// Wait for the work to finish.
+	FlushCommandQueue();
 }
 std::array<const CD3DX12_STATIC_SAMPLER_DESC, 6> RayTracingApp::GetStaticSamplers()
 {
