@@ -1,24 +1,41 @@
 #include "../../Common/d3dApp.h"
 #include "../../Common/Camera.h"
+#include "../../Common/UploadBuffer.h"
+
 using Microsoft::WRL::ComPtr;
+using namespace DirectX;
+
+struct PassConstants
+{
+	XMMATRIX View;
+	XMMATRIX InvView;
+	XMMATRIX Proj;
+	XMMATRIX InvProj;
+	XMMATRIX ViewProj;
+	XMMATRIX InvViewProj;
+};
+
 class RayTracingApp : public D3DApp
 {
 public:
 	RayTracingApp(HINSTANCE hInstance);
 	virtual bool Initialize()override;
 private:
+	virtual void OnResize()override;
 	virtual void Update(const GameTimer& gt)override;
 	virtual void Draw(const GameTimer& gt)override;
 	void LoadTextures();
 	void BuildBuffers();
 	void BuildRootSignature();
 	void BuildDescriptorHeaps();
+	void BuildConstantBuffers();
 	void BuildShadersAndInputLayout();
 	void BuildPSOs();
 	std::array<const CD3DX12_STATIC_SAMPLER_DESC, 6> GetStaticSamplers();
 	std::unordered_map<std::string, std::unique_ptr<Texture>> mTextures;
 	std::unordered_map<std::string, ComPtr<ID3DBlob>> mShaders;
 	std::unordered_map<std::string, ComPtr<ID3D12PipelineState>> mPSOs;
+	std::unique_ptr<UploadBuffer<PassConstants>> mPassCB = nullptr;
 	ComPtr<ID3D12Resource> mOutputBuffer = nullptr;
 	ComPtr<ID3D12RootSignature> mRootSignature = nullptr;
 	ComPtr<ID3D12DescriptorHeap> mSrvDescriptorHeap = nullptr;
@@ -47,6 +64,7 @@ bool RayTracingApp::Initialize()
 	BuildBuffers();
 	BuildRootSignature();
 	BuildDescriptorHeaps();
+	BuildConstantBuffers();
 	BuildShadersAndInputLayout();
 	/*	BuildShapeGeometry();
 	BuildSkullGeometry();
@@ -102,6 +120,9 @@ void RayTracingApp::BuildRootSignature()
 	CD3DX12_DESCRIPTOR_RANGE texTable;
 	texTable.Init(D3D12_DESCRIPTOR_RANGE_TYPE_SRV, 1, 0, 0);
 
+	CD3DX12_DESCRIPTOR_RANGE uavTable;
+	uavTable.Init(D3D12_DESCRIPTOR_RANGE_TYPE_UAV, 1, 0);
+
 	// Root parameter can be a table, root descriptor or root constants.
 	CD3DX12_ROOT_PARAMETER slotRootParameter[5];
 
@@ -109,8 +130,8 @@ void RayTracingApp::BuildRootSignature()
 	slotRootParameter[0].InitAsConstantBufferView(0);
 	slotRootParameter[1].InitAsConstantBufferView(1);
 	slotRootParameter[2].InitAsShaderResourceView(0, 1);
-	slotRootParameter[3].InitAsDescriptorTable(1, &texTable, D3D12_SHADER_VISIBILITY_PIXEL);
-	slotRootParameter[4].InitAsUnorderedAccessView(0);
+	slotRootParameter[3].InitAsDescriptorTable(1, &texTable );
+	slotRootParameter[4].InitAsDescriptorTable(1, &uavTable	);
 
 
 	auto staticSamplers = GetStaticSamplers();
@@ -144,7 +165,7 @@ void RayTracingApp::BuildDescriptorHeaps()
 	// Create the SRV heap.
 	//
 	D3D12_DESCRIPTOR_HEAP_DESC srvHeapDesc = {};
-	srvHeapDesc.NumDescriptors = 1;
+	srvHeapDesc.NumDescriptors = 2;
 	srvHeapDesc.Type = D3D12_DESCRIPTOR_HEAP_TYPE_CBV_SRV_UAV;
 	srvHeapDesc.Flags = D3D12_DESCRIPTOR_HEAP_FLAG_SHADER_VISIBLE;
 	ThrowIfFailed(md3dDevice->CreateDescriptorHeap(&srvHeapDesc, IID_PPV_ARGS(&mSrvDescriptorHeap)));
@@ -162,6 +183,34 @@ void RayTracingApp::BuildDescriptorHeaps()
 	srvDesc.TextureCube.ResourceMinLODClamp = 0.0f;
 	srvDesc.Format = skyTex->GetDesc().Format;
 	md3dDevice->CreateShaderResourceView(skyTex.Get(), &srvDesc, hDescriptor);
+
+
+	hDescriptor.Offset(1, mCbvSrvDescriptorSize);
+	D3D12_UNORDERED_ACCESS_VIEW_DESC uavDesc = {};
+	uavDesc.Format = DXGI_FORMAT_R8G8B8A8_UNORM;
+	uavDesc.ViewDimension = D3D12_UAV_DIMENSION_TEXTURE2D;
+	uavDesc.Texture2D.MipSlice = 0;
+	md3dDevice->CreateUnorderedAccessView(mOutputBuffer.Get(), nullptr, &uavDesc, hDescriptor);
+
+}
+void RayTracingApp::BuildConstantBuffers()
+{
+	mPassCB = std::make_unique<UploadBuffer<PassConstants>>(md3dDevice.Get(), 1, true);
+
+	UINT objCBByteSize = d3dUtil::CalcConstantBufferByteSize(sizeof(PassConstants));
+
+	D3D12_GPU_VIRTUAL_ADDRESS cbAddress = mPassCB->Resource()->GetGPUVirtualAddress();
+	// Offset to the ith object constant buffer in the buffer.
+	int boxCBufIndex = 0;
+	cbAddress += boxCBufIndex * objCBByteSize;
+
+	D3D12_CONSTANT_BUFFER_VIEW_DESC cbvDesc;
+	cbvDesc.BufferLocation = cbAddress;
+	cbvDesc.SizeInBytes = d3dUtil::CalcConstantBufferByteSize(sizeof(PassConstants));
+
+	md3dDevice->CreateConstantBufferView(
+		&cbvDesc,
+		mSrvDescriptorHeap->GetCPUDescriptorHandleForHeapStart());
 }
 void RayTracingApp::BuildShadersAndInputLayout()
 {
@@ -179,8 +228,24 @@ void RayTracingApp::BuildPSOs()
 	computePsoDesc.Flags = D3D12_PIPELINE_STATE_FLAG_NONE;
 	ThrowIfFailed(md3dDevice->CreateComputePipelineState(&computePsoDesc, IID_PPV_ARGS(&mPSOs["RayTracing"])));
 }
+void RayTracingApp::OnResize()
+{
+	D3DApp::OnResize();
+
+	mCamera.SetLens(0.25f*MathHelper::Pi, AspectRatio(), 1.0f, 1000.0f);
+}
 void RayTracingApp::Update(const GameTimer& gt)
 {
+	mCamera.UpdateViewMatrix();
+
+	PassConstants passConstants;
+
+	passConstants.View = mCamera.GetView();
+	passConstants.InvView = XMMatrixInverse(&XMMatrixDeterminant(passConstants.View), passConstants.View);
+	passConstants.Proj = mCamera.GetProj();
+	passConstants.InvProj = XMMatrixInverse(&XMMatrixDeterminant(passConstants.Proj), passConstants.Proj);
+
+	mPassCB->CopyData(0, passConstants);
 }
 void RayTracingApp::Draw(const GameTimer& gt)
 {
@@ -192,13 +257,27 @@ void RayTracingApp::Draw(const GameTimer& gt)
 	// Reusing the command list reuses memory.
 	ThrowIfFailed(mCommandList->Reset(mDirectCmdListAlloc.Get(), mPSOs["RayTracing"].Get()));
 
+	ID3D12DescriptorHeap* descriptorHeaps[] = { mSrvDescriptorHeap.Get() };
+	mCommandList->SetDescriptorHeaps(_countof(descriptorHeaps), descriptorHeaps);
+
 	mCommandList->SetComputeRootSignature(mRootSignature.Get());
+
+	mCommandList->SetComputeRootConstantBufferView(0, mPassCB->Resource()->GetGPUVirtualAddress());
 
 //	mCommandList->SetComputeRootShaderResourceView(0, mInputBufferA->GetGPUVirtualAddress());
 //	mCommandList->SetComputeRootShaderResourceView(1, mInputBufferB->GetGPUVirtualAddress());
-	mCommandList->SetComputeRootUnorderedAccessView(4, mOutputBuffer->GetGPUVirtualAddress());
+//	mCommandList->SetComputeRootUnorderedAccessView(4, mOutputBuffer->GetGPUVirtualAddress());
+
+	CD3DX12_GPU_DESCRIPTOR_HANDLE hGpuDescriptor(mSrvDescriptorHeap->GetGPUDescriptorHandleForHeapStart());
+	
+	mCommandList->SetComputeRootDescriptorTable(3, hGpuDescriptor);
+	hGpuDescriptor.Offset(1, mCbvSrvDescriptorSize);
+	mCommandList->SetComputeRootDescriptorTable(4, hGpuDescriptor);
 
 	mCommandList->Dispatch((UINT)ceilf(mClientWidth / 8.f), (UINT)ceilf(mClientHeight / 8.f), 1);
+
+	mCommandList->ResourceBarrier(1, &CD3DX12_RESOURCE_BARRIER::Transition(CurrentBackBuffer(),
+		D3D12_RESOURCE_STATE_PRESENT, D3D12_RESOURCE_STATE_COPY_DEST));
 
 	// Schedule to copy the data to the default buffer to the readback buffer.
 	mCommandList->ResourceBarrier(1, &CD3DX12_RESOURCE_BARRIER::Transition(mOutputBuffer.Get(),
@@ -209,6 +288,10 @@ void RayTracingApp::Draw(const GameTimer& gt)
 	mCommandList->ResourceBarrier(1, &CD3DX12_RESOURCE_BARRIER::Transition(mOutputBuffer.Get(),
 		D3D12_RESOURCE_STATE_COPY_SOURCE, D3D12_RESOURCE_STATE_COMMON));
 
+	mCommandList->ResourceBarrier(1, &CD3DX12_RESOURCE_BARRIER::Transition(CurrentBackBuffer(),
+		D3D12_RESOURCE_STATE_COPY_DEST, D3D12_RESOURCE_STATE_PRESENT));
+
+
 	// Done recording commands.
 	ThrowIfFailed(mCommandList->Close());
 
@@ -216,7 +299,11 @@ void RayTracingApp::Draw(const GameTimer& gt)
 	ID3D12CommandList* cmdsLists[] = { mCommandList.Get() };
 	mCommandQueue->ExecuteCommandLists(_countof(cmdsLists), cmdsLists);
 	ThrowIfFailed(mSwapChain->Present(0, 0));
-	// Wait for the work to finish.
+	mCurrBackBuffer = (mCurrBackBuffer + 1) % SwapChainBufferCount;
+
+	// Wait until frame commands are complete.  This waiting is inefficient and is
+	// done for simplicity.  Later we will show how to organize our rendering code
+	// so we do not have to wait per frame.
 	FlushCommandQueue();
 }
 std::array<const CD3DX12_STATIC_SAMPLER_DESC, 6> RayTracingApp::GetStaticSamplers()
