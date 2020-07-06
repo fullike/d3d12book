@@ -52,7 +52,8 @@ void CS(int3 groupThreadID : SV_GroupID, int3 id : SV_DispatchThreadID)
 	// Transform pixel to [-1,1] range
 	float2 uv = float2((id.xy + float2(0.5f, 0.5f)) / float2(width, height) * 2.0f - 1.0f);
 	// Get a ray for the UVs
-	Ray ray = CreateCameraRay(uv);
+	Ray ray = CreateCameraRay(float2(uv.x,-uv.y));
 	// Write some colors
-	gOutput[id.xy] = float4(ray.direction * 0.5f + 0.5f, 1.0f);
+//	gOutput[id.xy] = float4(ray.direction * 0.5f + 0.5f, 1.0f);
+	gOutput[id.xy] = gCubeMap.SampleLevel(gsamLinearWrap, ray.direction, 0);
 }

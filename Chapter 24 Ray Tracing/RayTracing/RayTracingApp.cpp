@@ -196,7 +196,7 @@ void RayTracingApp::BuildDescriptorHeaps()
 void RayTracingApp::BuildConstantBuffers()
 {
 	mPassCB = std::make_unique<UploadBuffer<PassConstants>>(md3dDevice.Get(), 1, true);
-
+	/*
 	UINT objCBByteSize = d3dUtil::CalcConstantBufferByteSize(sizeof(PassConstants));
 
 	D3D12_GPU_VIRTUAL_ADDRESS cbAddress = mPassCB->Resource()->GetGPUVirtualAddress();
@@ -210,7 +210,7 @@ void RayTracingApp::BuildConstantBuffers()
 
 	md3dDevice->CreateConstantBufferView(
 		&cbvDesc,
-		mSrvDescriptorHeap->GetCPUDescriptorHandleForHeapStart());
+		mSrvDescriptorHeap->GetCPUDescriptorHandleForHeapStart());*/
 }
 void RayTracingApp::BuildShadersAndInputLayout()
 {
