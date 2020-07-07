@@ -24,6 +24,10 @@ private:
 	virtual void OnResize()override;
 	virtual void Update(const GameTimer& gt)override;
 	virtual void Draw(const GameTimer& gt)override;
+	virtual void OnMouseDown(WPARAM btnState, int x, int y)override;
+	virtual void OnMouseUp(WPARAM btnState, int x, int y)override;
+	virtual void OnMouseMove(WPARAM btnState, int x, int y)override;
+	void OnKeyboardInput(const GameTimer& gt);
 	void LoadTextures();
 	void BuildBuffers();
 	void BuildRootSignature();
@@ -42,6 +46,7 @@ private:
 	ComPtr<ID3D12PipelineState> mPSO = nullptr;
 	UINT mCbvSrvDescriptorSize = 0;
 	Camera mCamera;
+	POINT mLastMousePos;
 };
 RayTracingApp::RayTracingApp(HINSTANCE hInstance) : D3DApp(hInstance)
 {
@@ -58,7 +63,7 @@ bool RayTracingApp::Initialize()
 	// so we have to query this information.
 	mCbvSrvDescriptorSize = md3dDevice->GetDescriptorHandleIncrementSize(D3D12_DESCRIPTOR_HEAP_TYPE_CBV_SRV_UAV);
 
-	mCamera.SetPosition(0.0f, 2.0f, -15.0f);
+	mCamera.SetPosition(0, 0, 0);
 
 	LoadTextures();
 	BuildBuffers();
@@ -234,16 +239,74 @@ void RayTracingApp::OnResize()
 
 	mCamera.SetLens(0.25f*MathHelper::Pi, AspectRatio(), 1.0f, 1000.0f);
 }
+void RayTracingApp::OnMouseDown(WPARAM btnState, int x, int y)
+{
+	mLastMousePos.x = x;
+	mLastMousePos.y = y;
+
+	SetCapture(mhMainWnd);
+}
+
+void RayTracingApp::OnMouseUp(WPARAM btnState, int x, int y)
+{
+	ReleaseCapture();
+}
+
+void RayTracingApp::OnMouseMove(WPARAM btnState, int x, int y)
+{
+	if ((btnState & MK_LBUTTON) != 0)
+	{
+		// Make each pixel correspond to a quarter of a degree.
+		float dx = XMConvertToRadians(0.25f*static_cast<float>(x - mLastMousePos.x));
+		float dy = XMConvertToRadians(0.25f*static_cast<float>(y - mLastMousePos.y));
+
+		mCamera.Pitch(dy);
+		mCamera.RotateY(dx);
+	}
+
+	mLastMousePos.x = x;
+	mLastMousePos.y = y;
+}
+
+void RayTracingApp::OnKeyboardInput(const GameTimer& gt)
+{
+	const float dt = gt.DeltaTime();
+
+	if (GetAsyncKeyState('W') & 0x8000)
+		mCamera.Walk(10.0f*dt);
+
+	if (GetAsyncKeyState('S') & 0x8000)
+		mCamera.Walk(-10.0f*dt);
+
+	if (GetAsyncKeyState('A') & 0x8000)
+		mCamera.Strafe(-10.0f*dt);
+
+	if (GetAsyncKeyState('D') & 0x8000)
+		mCamera.Strafe(10.0f*dt);
+
+	mCamera.UpdateViewMatrix();
+}
 void RayTracingApp::Update(const GameTimer& gt)
 {
+	OnKeyboardInput(gt);
+
 	mCamera.UpdateViewMatrix();
 
 	PassConstants passConstants;
 
-	passConstants.View = mCamera.GetView();
-	passConstants.InvView = XMMatrixInverse(&XMMatrixDeterminant(passConstants.View), passConstants.View);
-	passConstants.Proj = mCamera.GetProj();
-	passConstants.InvProj = XMMatrixInverse(&XMMatrixDeterminant(passConstants.Proj), passConstants.Proj);
+	XMMATRIX view = mCamera.GetView();
+	XMMATRIX proj = mCamera.GetProj();
+	XMMATRIX viewProj = XMMatrixMultiply(view, proj);
+	XMMATRIX invView = XMMatrixInverse(&XMMatrixDeterminant(view), view);
+	XMMATRIX invProj = XMMatrixInverse(&XMMatrixDeterminant(proj), proj);
+	XMMATRIX invViewProj = XMMatrixInverse(&XMMatrixDeterminant(viewProj), viewProj);
+
+	passConstants.View = (view);
+	passConstants.Proj = (proj);
+	passConstants.ViewProj = (viewProj);
+	passConstants.InvView = (invView);
+	passConstants.InvProj = (invProj);
+	passConstants.InvViewProj = (invViewProj);
 
 	mPassCB->CopyData(0, passConstants);
 }
