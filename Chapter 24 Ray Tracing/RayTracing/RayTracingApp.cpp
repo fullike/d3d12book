@@ -13,8 +13,16 @@ struct PassConstants
 	XMMATRIX InvProj;
 	XMMATRIX ViewProj;
 	XMMATRIX InvViewProj;
+	XMFLOAT4 DirectionalLight;
+	int NumSpheres;
 };
-
+struct Sphere
+{
+	XMFLOAT3 position;
+	float radius;
+	XMFLOAT3 albedo;
+	XMFLOAT3 specular;
+};
 class RayTracingApp : public D3DApp
 {
 public:
@@ -40,6 +48,7 @@ private:
 	std::unordered_map<std::string, ComPtr<ID3DBlob>> mShaders;
 	std::unordered_map<std::string, ComPtr<ID3D12PipelineState>> mPSOs;
 	std::unique_ptr<UploadBuffer<PassConstants>> mPassCB = nullptr;
+	std::unique_ptr<UploadBuffer<Sphere>> mSpheres = nullptr;
 	ComPtr<ID3D12Resource> mOutputBuffer = nullptr;
 	ComPtr<ID3D12RootSignature> mRootSignature = nullptr;
 	ComPtr<ID3D12DescriptorHeap> mSrvDescriptorHeap = nullptr;
@@ -133,7 +142,7 @@ void RayTracingApp::BuildRootSignature()
 
 	// Perfomance TIP: Order from most frequent to least frequent.
 	slotRootParameter[0].InitAsConstantBufferView(0);
-	slotRootParameter[1].InitAsConstantBufferView(1);
+	slotRootParameter[1].InitAsShaderResourceView(1);
 	slotRootParameter[2].InitAsShaderResourceView(0, 1);
 	slotRootParameter[3].InitAsDescriptorTable(1, &texTable );
 	slotRootParameter[4].InitAsDescriptorTable(1, &uavTable	);
@@ -201,6 +210,18 @@ void RayTracingApp::BuildDescriptorHeaps()
 void RayTracingApp::BuildConstantBuffers()
 {
 	mPassCB = std::make_unique<UploadBuffer<PassConstants>>(md3dDevice.Get(), 1, true);
+	mSpheres = std::make_unique<UploadBuffer<Sphere>>(md3dDevice.Get(), 64, false);
+	for (int i = 0; i < 64; i++)
+	{
+		int x = i % 8;
+		int y = i / 8;
+		Sphere sphere;
+		sphere.radius = MathHelper::RandF(1, 4);
+		sphere.position = XMFLOAT3(x * 8, sphere.radius, y * 8);
+		sphere.albedo = XMFLOAT3(MathHelper::RandF(), MathHelper::RandF(), MathHelper::RandF());
+		sphere.specular = XMFLOAT3(MathHelper::RandF(), MathHelper::RandF(), MathHelper::RandF());
+		mSpheres->CopyData(i, sphere);
+	}
 	/*
 	UINT objCBByteSize = d3dUtil::CalcConstantBufferByteSize(sizeof(PassConstants));
 
@@ -307,7 +328,8 @@ void RayTracingApp::Update(const GameTimer& gt)
 	passConstants.InvView = (invView);
 	passConstants.InvProj = (invProj);
 	passConstants.InvViewProj = (invViewProj);
-
+	passConstants.DirectionalLight = XMFLOAT4(0.707f, -0.707f, 0, 1);
+	passConstants.NumSpheres = 64;
 	mPassCB->CopyData(0, passConstants);
 }
 void RayTracingApp::Draw(const GameTimer& gt)
@@ -326,10 +348,9 @@ void RayTracingApp::Draw(const GameTimer& gt)
 	mCommandList->SetComputeRootSignature(mRootSignature.Get());
 
 	mCommandList->SetComputeRootConstantBufferView(0, mPassCB->Resource()->GetGPUVirtualAddress());
+//	mCommandList->SetComputeRootConstantBufferView(1, mSpheres->Resource()->GetGPUVirtualAddress());
+	mCommandList->SetComputeRootShaderResourceView(1, mSpheres->Resource()->GetGPUVirtualAddress());
 
-//	mCommandList->SetComputeRootShaderResourceView(0, mInputBufferA->GetGPUVirtualAddress());
-//	mCommandList->SetComputeRootShaderResourceView(1, mInputBufferB->GetGPUVirtualAddress());
-//	mCommandList->SetComputeRootUnorderedAccessView(4, mOutputBuffer->GetGPUVirtualAddress());
 
 	CD3DX12_GPU_DESCRIPTOR_HANDLE hGpuDescriptor(mSrvDescriptorHeap->GetGPUDescriptorHandleForHeapStart());
 	

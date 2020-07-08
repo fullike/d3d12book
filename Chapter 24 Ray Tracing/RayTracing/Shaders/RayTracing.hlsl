@@ -17,24 +17,40 @@ cbuffer cbPass : register(b0)
 	float4x4 gInvProj;
 	float4x4 gViewProj;
 	float4x4 gInvViewProj;
+	float4 gDirectionalLight;
+	int NumSpheres;
 };
 
 struct Ray
 {
 	float3 origin;
 	float3 direction;
+	float3 energy;
 };
 struct RayHit
 {
 	float3 position;
 	float distance;
 	float3 normal;
+	float3 albedo;
+	float3 specular;
 };
+struct Sphere
+{
+	float3 position;
+	float radius;
+	float3 albedo;
+	float3 specular;
+};
+
+StructuredBuffer<Sphere> gSpheres : register(t1);
+
 Ray CreateRay(float3 origin, float3 direction)
 {
 	Ray ray;
 	ray.origin = origin;
 	ray.direction = direction;
+	ray.energy = float3(1, 1, 1);
 	return ray;
 }
 RayHit CreateRayHit()
@@ -43,7 +59,18 @@ RayHit CreateRayHit()
 	hit.position = float3(0.0f, 0.0f, 0.0f);
 	hit.distance = 1.#INF;
 	hit.normal = float3(0.0f, 0.0f, 0.0f);
+	hit.specular = float3(0.6f, 0.6f, 0.6f);
+	hit.albedo = float3(0.8f, 0.8f, 0.8f);
 	return hit;
+}
+Sphere CreateSphere(float3 position, float radius)
+{
+	Sphere sphere;
+	sphere.position = position;
+	sphere.radius = radius;
+	sphere.specular = float3(0.6f, 0.6f, 0.6f);
+	sphere.albedo = float3(0.8f, 0.8f, 0.8f);
+	return sphere;
 }
 Ray CreateCameraRay(float2 uv)
 {
@@ -68,12 +95,12 @@ void IntersectGroundPlane(Ray ray, inout RayHit bestHit)
 		bestHit.normal = float3(0.0f, 1.0f, 0.0f);
 	}
 }
-void IntersectSphere(Ray ray, inout RayHit bestHit, float4 sphere)
+void IntersectSphere(Ray ray, inout RayHit bestHit, Sphere sphere)
 {
 	// Calculate distance along the ray where the sphere is intersected
-	float3 d = ray.origin - sphere.xyz;
+	float3 d = ray.origin - sphere.position;
 	float p1 = -dot(ray.direction, d);
-	float p2sqr = p1 * p1 - dot(d, d) + sphere.w * sphere.w;
+	float p2sqr = p1 * p1 - dot(d, d) + sphere.radius * sphere.radius;
 	if (p2sqr < 0)
 		return;
 	float p2 = sqrt(p2sqr);
@@ -82,13 +109,16 @@ void IntersectSphere(Ray ray, inout RayHit bestHit, float4 sphere)
 	{
 		bestHit.distance = t;
 		bestHit.position = ray.origin + t * ray.direction;
-		bestHit.normal = normalize(bestHit.position - sphere.xyz);
+		bestHit.normal = normalize(bestHit.position - sphere.position);
+		bestHit.albedo = sphere.albedo;
+		bestHit.specular = sphere.specular;
 	}
 }
 RayHit Trace(Ray ray)
 {
 	RayHit bestHit = CreateRayHit();
-	IntersectSphere(ray, bestHit, float4(0, 0.0f, 3, 1.0f));
+	for (int i = 0; i < NumSpheres; i++)
+		IntersectSphere(ray, bestHit, gSpheres[i]);
 	IntersectGroundPlane(ray, bestHit);
 	return bestHit;
 }
@@ -96,11 +126,27 @@ float3 Shade(inout Ray ray, RayHit hit)
 {
 	if (hit.distance < 1.#INF)
 	{
-		// Return the normal
-		return hit.normal * 0.5f + 0.5f;
+		float3 specular = hit.specular;
+		// Reflect the ray and multiply energy with specular reflection
+		ray.origin = hit.position + hit.normal * 0.001f;
+		ray.direction = reflect(ray.direction, hit.normal);
+		ray.energy *= specular;
+		// pure specular metal Return nothing
+		// return float3(0.0f, 0.0f, 0.0f);
+		bool shadow = false;
+		Ray shadowRay = CreateRay(hit.position + hit.normal * 0.001f, -1 * gDirectionalLight.xyz);
+		RayHit shadowHit = Trace(shadowRay);
+		if (shadowHit.distance != 1.#INF)
+		{
+			return float3(0.0f, 0.0f, 0.0f);
+		}
+		float3 albedo = hit.albedo;
+		return saturate(dot(hit.normal, gDirectionalLight.xyz) * -1) * gDirectionalLight.w * albedo;
 	}
 	else
 	{
+		// Erase the ray's energy - the sky doesn't reflect anything
+		ray.energy = 0.0f;
 		return gCubeMap.SampleLevel(gsamLinearWrap, ray.direction, 0).xyz;
 	}
 }
@@ -116,7 +162,13 @@ void CS(int3 groupThreadID : SV_GroupID, int3 id : SV_DispatchThreadID)
 	// Get a ray for the UVs
 	Ray ray = CreateCameraRay(float2(uv.x,-uv.y));
 	// Write some colors
-	RayHit hit = Trace(ray);
-	float3 result = Shade(ray, hit);
+	float3 result = float3(0, 0, 0);
+	for (int i = 0; i < 8; i++)
+	{
+		RayHit hit = Trace(ray);
+		result += ray.energy * Shade(ray, hit);
+		if (!any(ray.energy))
+			break;
+	}
 	gOutput[id.xy] = float4(result, 1);
 }
