@@ -15,6 +15,7 @@ struct PassConstants
 	XMMATRIX InvViewProj;
 	XMFLOAT4 DirectionalLight;
 	int NumSpheres;
+	int NumTriangles;
 };
 struct Sphere
 {
@@ -22,6 +23,17 @@ struct Sphere
 	float radius;
 	XMFLOAT3 albedo;
 	XMFLOAT3 specular;
+};
+struct Vertex
+{
+	XMFLOAT3 position;
+	XMFLOAT3 normal;
+	XMFLOAT2 uv;
+};
+struct Triangle
+{
+	UINT indices[3];
+	UINT material;
 };
 class RayTracingApp : public D3DApp
 {
@@ -49,11 +61,14 @@ private:
 	std::unordered_map<std::string, ComPtr<ID3D12PipelineState>> mPSOs;
 	std::unique_ptr<UploadBuffer<PassConstants>> mPassCB = nullptr;
 	std::unique_ptr<UploadBuffer<Sphere>> mSpheres = nullptr;
+	std::unique_ptr<UploadBuffer<Vertex>> mVertices = nullptr;
+	std::unique_ptr<UploadBuffer<Triangle>> mTriangles = nullptr;
 	ComPtr<ID3D12Resource> mOutputBuffer = nullptr;
 	ComPtr<ID3D12RootSignature> mRootSignature = nullptr;
 	ComPtr<ID3D12DescriptorHeap> mSrvDescriptorHeap = nullptr;
 	ComPtr<ID3D12PipelineState> mPSO = nullptr;
 	UINT mCbvSrvDescriptorSize = 0;
+	UINT NumTriangles;
 	Camera mCamera;
 	POINT mLastMousePos;
 };
@@ -138,20 +153,21 @@ void RayTracingApp::BuildRootSignature()
 	uavTable.Init(D3D12_DESCRIPTOR_RANGE_TYPE_UAV, 1, 0);
 
 	// Root parameter can be a table, root descriptor or root constants.
-	CD3DX12_ROOT_PARAMETER slotRootParameter[5];
+	CD3DX12_ROOT_PARAMETER slotRootParameter[6];
 
 	// Perfomance TIP: Order from most frequent to least frequent.
 	slotRootParameter[0].InitAsConstantBufferView(0);
 	slotRootParameter[1].InitAsShaderResourceView(1);
-	slotRootParameter[2].InitAsShaderResourceView(0, 1);
-	slotRootParameter[3].InitAsDescriptorTable(1, &texTable );
-	slotRootParameter[4].InitAsDescriptorTable(1, &uavTable	);
+	slotRootParameter[2].InitAsShaderResourceView(2);
+	slotRootParameter[3].InitAsShaderResourceView(3);
+	slotRootParameter[4].InitAsDescriptorTable(1, &texTable );
+	slotRootParameter[5].InitAsDescriptorTable(1, &uavTable	);
 
 
 	auto staticSamplers = GetStaticSamplers();
 
 	// A root signature is an array of root parameters.
-	CD3DX12_ROOT_SIGNATURE_DESC rootSigDesc(5, slotRootParameter,
+	CD3DX12_ROOT_SIGNATURE_DESC rootSigDesc(6, slotRootParameter,
 		(UINT)staticSamplers.size(), staticSamplers.data(),
 		D3D12_ROOT_SIGNATURE_FLAG_ALLOW_INPUT_ASSEMBLER_INPUT_LAYOUT);
 
@@ -217,26 +233,46 @@ void RayTracingApp::BuildConstantBuffers()
 		int y = i / 8;
 		Sphere sphere;
 		sphere.radius = MathHelper::RandF(1, 4);
-		sphere.position = XMFLOAT3(x * 8, sphere.radius, y * 8);
+		sphere.position = XMFLOAT3(x * 8.f, sphere.radius, y * 8.f);
 		sphere.albedo = XMFLOAT3(MathHelper::RandF(), MathHelper::RandF(), MathHelper::RandF());
 		sphere.specular = XMFLOAT3(MathHelper::RandF(), MathHelper::RandF(), MathHelper::RandF());
 		mSpheres->CopyData(i, sphere);
 	}
-	/*
-	UINT objCBByteSize = d3dUtil::CalcConstantBufferByteSize(sizeof(PassConstants));
 
-	D3D12_GPU_VIRTUAL_ADDRESS cbAddress = mPassCB->Resource()->GetGPUVirtualAddress();
-	// Offset to the ith object constant buffer in the buffer.
-	int boxCBufIndex = 0;
-	cbAddress += boxCBufIndex * objCBByteSize;
-
-	D3D12_CONSTANT_BUFFER_VIEW_DESC cbvDesc;
-	cbvDesc.BufferLocation = cbAddress;
-	cbvDesc.SizeInBytes = d3dUtil::CalcConstantBufferByteSize(sizeof(PassConstants));
-
-	md3dDevice->CreateConstantBufferView(
-		&cbvDesc,
-		mSrvDescriptorHeap->GetCPUDescriptorHandleForHeapStart());*/
+	std::ifstream fin("Models/car.txt");
+	if (!fin)
+	{
+		MessageBox(0, L"Models/skull.txt not found.", 0, 0);
+		return;
+	}
+	UINT vcount = 0;
+	UINT tcount = 0;
+	std::string ignore;
+	fin >> ignore >> vcount;
+	fin >> ignore >> tcount;
+	fin >> ignore >> ignore >> ignore >> ignore;
+	mVertices = std::make_unique<UploadBuffer<Vertex>>(md3dDevice.Get(), vcount, false);
+	for (UINT i = 0; i < vcount; ++i)
+	{
+		Vertex vertex;
+		fin >> vertex.position.x >> vertex.position.y >> vertex.position.z;
+		fin >> vertex.normal.x >> vertex.normal.y >> vertex.normal.z;
+		// Model does not have texture coordinates, so just zero them out.
+		vertex.uv = { 0.0f, 0.0f };
+		mVertices->CopyData(i, vertex);
+	}
+	fin >> ignore;
+	fin >> ignore;
+	fin >> ignore;
+	mTriangles = std::make_unique<UploadBuffer<Triangle>>(md3dDevice.Get(), tcount, false);
+	for (UINT i = 0; i < tcount; ++i)
+	{
+		Triangle triangle;
+		fin >> triangle.indices[0] >> triangle.indices[1] >> triangle.indices[2];
+		mTriangles->CopyData(i, triangle);
+	}
+	fin.close();
+	NumTriangles = tcount;
 }
 void RayTracingApp::BuildShadersAndInputLayout()
 {
@@ -330,6 +366,7 @@ void RayTracingApp::Update(const GameTimer& gt)
 	passConstants.InvViewProj = (invViewProj);
 	passConstants.DirectionalLight = XMFLOAT4(0.707f, -0.707f, 0, 1);
 	passConstants.NumSpheres = 64;
+	passConstants.NumTriangles = NumTriangles;
 	mPassCB->CopyData(0, passConstants);
 }
 void RayTracingApp::Draw(const GameTimer& gt)
@@ -350,13 +387,14 @@ void RayTracingApp::Draw(const GameTimer& gt)
 	mCommandList->SetComputeRootConstantBufferView(0, mPassCB->Resource()->GetGPUVirtualAddress());
 //	mCommandList->SetComputeRootConstantBufferView(1, mSpheres->Resource()->GetGPUVirtualAddress());
 	mCommandList->SetComputeRootShaderResourceView(1, mSpheres->Resource()->GetGPUVirtualAddress());
-
+	mCommandList->SetComputeRootShaderResourceView(2, mVertices->Resource()->GetGPUVirtualAddress());
+	mCommandList->SetComputeRootShaderResourceView(3, mTriangles->Resource()->GetGPUVirtualAddress());
 
 	CD3DX12_GPU_DESCRIPTOR_HANDLE hGpuDescriptor(mSrvDescriptorHeap->GetGPUDescriptorHandleForHeapStart());
 	
-	mCommandList->SetComputeRootDescriptorTable(3, hGpuDescriptor);
-	hGpuDescriptor.Offset(1, mCbvSrvDescriptorSize);
 	mCommandList->SetComputeRootDescriptorTable(4, hGpuDescriptor);
+	hGpuDescriptor.Offset(1, mCbvSrvDescriptorSize);
+	mCommandList->SetComputeRootDescriptorTable(5, hGpuDescriptor);
 
 	mCommandList->Dispatch((UINT)ceilf(mClientWidth / 8.f), (UINT)ceilf(mClientHeight / 8.f), 1);
 

@@ -19,8 +19,8 @@ cbuffer cbPass : register(b0)
 	float4x4 gInvViewProj;
 	float4 gDirectionalLight;
 	int NumSpheres;
+	int NumTriangles;
 };
-
 struct Ray
 {
 	float3 origin;
@@ -42,8 +42,20 @@ struct Sphere
 	float3 albedo;
 	float3 specular;
 };
-
+struct Vertex
+{
+	float3 position;
+	float3 normal;
+	float2 uv;
+};
+struct Triangle
+{
+	uint indices[3];
+	uint material;
+};
 StructuredBuffer<Sphere> gSpheres : register(t1);
+StructuredBuffer<Vertex> gVertices : register(t2);
+StructuredBuffer<Triangle> gTriangles : register(t3);
 
 Ray CreateRay(float3 origin, float3 direction)
 {
@@ -114,12 +126,67 @@ void IntersectSphere(Ray ray, inout RayHit bestHit, Sphere sphere)
 		bestHit.specular = sphere.specular;
 	}
 }
+static const float EPSILON = 1e-8;
+bool IntersectTriangle_MT97(Ray ray, float3 vert0, float3 vert1, float3 vert2, inout float t, inout float u, inout float v)
+{
+	// find vectors for two edges sharing vert0
+	float3 edge1 = vert1 - vert0;
+	float3 edge2 = vert2 - vert0;
+	// begin calculating determinant - also used to calculate U parameter
+	float3 pvec = cross(ray.direction, edge2);
+	// if determinant is near zero, ray lies in plane of triangle
+	float det = dot(edge1, pvec);
+	// use backface culling
+	if (det < EPSILON)
+		return false;
+	float inv_det = 1.0f / det;
+	// calculate distance from vert0 to ray origin
+	float3 tvec = ray.origin - vert0;
+	// calculate U parameter and test bounds
+	u = dot(tvec, pvec) * inv_det;
+	if (u < 0.0 || u > 1.0f)
+		return false;
+	// prepare to test V parameter
+	float3 qvec = cross(tvec, edge1);
+	// calculate V parameter and test bounds
+	v = dot(ray.direction, qvec) * inv_det;
+	if (v < 0.0 || u + v > 1.0f)
+		return false;
+	// calculate t, ray intersects triangle
+	t = dot(edge2, qvec) * inv_det;
+	return true;
+}
+/*
 RayHit Trace(Ray ray)
 {
 	RayHit bestHit = CreateRayHit();
 	for (int i = 0; i < NumSpheres; i++)
 		IntersectSphere(ray, bestHit, gSpheres[i]);
 	IntersectGroundPlane(ray, bestHit);
+	return bestHit;
+}*/
+RayHit Trace(Ray ray)
+{
+	RayHit bestHit = CreateRayHit();
+	for (int i = 0; i < NumTriangles; i++)
+	{
+		Triangle tri = gTriangles[i];
+		Vertex v0 = gVertices[tri.indices[0]];
+		Vertex v1 = gVertices[tri.indices[1]];
+		Vertex v2 = gVertices[tri.indices[2]];
+		float t, u, v;
+		if (IntersectTriangle_MT97(ray, v0.position, v1.position, v2.position, t, u, v) && t > 0 && t < bestHit.distance)
+		{
+			float w = 1 - u - v;
+			bestHit.distance = t;
+			bestHit.position = ray.origin + t * ray.direction;
+			bestHit.normal = normalize(v0.normal * u + v1.normal * v + v2.normal * w);
+		//	bestHit.albedo = sphere.albedo;
+		//	bestHit.specular = sphere.specular;
+		}
+	}
+	//	IntersectSphere(ray, bestHit, gSpheres[i]);
+	//IntersectGroundPlane(ray, bestHit);
 	return bestHit;
 }
 float3 Shade(inout Ray ray, RayHit hit)
