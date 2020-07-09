@@ -153,21 +153,23 @@ void RayTracingApp::BuildRootSignature()
 	uavTable.Init(D3D12_DESCRIPTOR_RANGE_TYPE_UAV, 1, 0);
 
 	// Root parameter can be a table, root descriptor or root constants.
-	CD3DX12_ROOT_PARAMETER slotRootParameter[6];
+	CD3DX12_ROOT_PARAMETER slotRootParameter[8];
 
 	// Perfomance TIP: Order from most frequent to least frequent.
 	slotRootParameter[0].InitAsConstantBufferView(0);
 	slotRootParameter[1].InitAsShaderResourceView(1);
 	slotRootParameter[2].InitAsShaderResourceView(2);
 	slotRootParameter[3].InitAsShaderResourceView(3);
-	slotRootParameter[4].InitAsDescriptorTable(1, &texTable );
-	slotRootParameter[5].InitAsDescriptorTable(1, &uavTable	);
+	slotRootParameter[4].InitAsShaderResourceView(4);
+	slotRootParameter[5].InitAsShaderResourceView(5);
+	slotRootParameter[6].InitAsDescriptorTable(1, &texTable );
+	slotRootParameter[7].InitAsDescriptorTable(1, &uavTable	);
 
 
 	auto staticSamplers = GetStaticSamplers();
 
 	// A root signature is an array of root parameters.
-	CD3DX12_ROOT_SIGNATURE_DESC rootSigDesc(6, slotRootParameter,
+	CD3DX12_ROOT_SIGNATURE_DESC rootSigDesc(8, slotRootParameter,
 		(UINT)staticSamplers.size(), staticSamplers.data(),
 		D3D12_ROOT_SIGNATURE_FLAG_ALLOW_INPUT_ASSEMBLER_INPUT_LAYOUT);
 
@@ -392,9 +394,9 @@ void RayTracingApp::Draw(const GameTimer& gt)
 
 	CD3DX12_GPU_DESCRIPTOR_HANDLE hGpuDescriptor(mSrvDescriptorHeap->GetGPUDescriptorHandleForHeapStart());
 	
-	mCommandList->SetComputeRootDescriptorTable(4, hGpuDescriptor);
+	mCommandList->SetComputeRootDescriptorTable(6, hGpuDescriptor);
 	hGpuDescriptor.Offset(1, mCbvSrvDescriptorSize);
-	mCommandList->SetComputeRootDescriptorTable(5, hGpuDescriptor);
+	mCommandList->SetComputeRootDescriptorTable(7, hGpuDescriptor);
 
 	mCommandList->Dispatch((UINT)ceilf(mClientWidth / 8.f), (UINT)ceilf(mClientHeight / 8.f), 1);
 

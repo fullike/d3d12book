@@ -53,9 +53,20 @@ struct Triangle
 	uint indices[3];
 	uint material;
 };
+struct KDNode
+{
+	float3 min;
+	float3 max;
+	uint left;
+	uint right;
+	uint start;
+	uint count;
+};
 StructuredBuffer<Sphere> gSpheres : register(t1);
 StructuredBuffer<Vertex> gVertices : register(t2);
 StructuredBuffer<Triangle> gTriangles : register(t3);
+StructuredBuffer<KDNode> gNodes : register(t4);
+StructuredBuffer<uint> gIndices : register(t5);
 
 Ray CreateRay(float3 origin, float3 direction)
 {
@@ -95,6 +106,37 @@ Ray CreateCameraRay(float2 uv)
 
 	direction = normalize(direction);
 	return CreateRay(origin, direction);
+}
+void swap(inout float a, inout float b)
+{
+	float c = a;
+	a = b;
+	b = c;
+}
+bool IntersectBox(float3 min, float3 max, Ray r)
+{
+	float tmin = (min.x - r.origin.x) / r.direction.x;
+	float tmax = (max.x - r.origin.x) / r.direction.x;
+	if (tmin > tmax) swap(tmin, tmax);
+	float tymin = (min.y - r.origin.y) / r.direction.y;
+	float tymax = (max.y - r.origin.y) / r.direction.y;
+	if (tymin > tymax) swap(tymin, tymax);
+	if ((tmin > tymax) || (tymin > tmax))
+		return false;
+	if (tymin > tmin)
+		tmin = tymin;
+	if (tymax < tmax)
+		tmax = tymax;
+	float tzmin = (min.z - r.origin.z) / r.direction.z;
+	float tzmax = (max.z - r.origin.z) / r.direction.z;
+	if (tzmin > tzmax) swap(tzmin, tzmax);
+	if ((tmin > tzmax) || (tzmin > tmax))
+		return false;
+	if (tzmin > tmin)
+		tmin = tzmin;
+	if (tzmax < tmax)
+		tmax = tzmax;
+	return true;
 }
 void IntersectGroundPlane(Ray ray, inout RayHit bestHit)
 {
@@ -164,7 +206,7 @@ RayHit Trace(Ray ray)
 		IntersectSphere(ray, bestHit, gSpheres[i]);
 	IntersectGroundPlane(ray, bestHit);
 	return bestHit;
-}*/
+}
 RayHit Trace(Ray ray)
 {
 	RayHit bestHit = CreateRayHit();
@@ -188,6 +230,55 @@ RayHit Trace(Ray ray)
 	//	IntersectSphere(ray, bestHit, gSpheres[i]);
 	//IntersectGroundPlane(ray, bestHit);
 	return bestHit;
+}*/
+RayHit Trace(Ray ray)
+{
+	uint NumNodes = 0;
+	uint Nodes[64];
+	Nodes[NumNodes++] = 0;
+	RayHit bestHit = CreateRayHit();
+	for (uint i = 0; i < NumNodes; i++)
+	{
+		KDNode node = gNodes[Nodes[i]];
+		if (node.count > 0)
+		{
+			for (uint j = 0; j < node.count; j++)
+			{
+				Triangle tri = gTriangles[gIndices[node.start + j]];
+				Vertex v0 = gVertices[tri.indices[0]];
+				Vertex v1 = gVertices[tri.indices[1]];
+				Vertex v2 = gVertices[tri.indices[2]];
+				float t, u, v;
+				if (IntersectTriangle_MT97(ray, v0.position, v1.position, v2.position, t, u, v) && t > 0 && t < bestHit.distance)
+				{
+					float w = 1 - u - v;
+					bestHit.distance = t;
+					bestHit.position = ray.origin + t * ray.direction;
+					bestHit.normal = normalize(v0.normal * u + v1.normal * v + v2.normal * w);
+				//	bestHit.albedo = sphere.albedo;
+				//	bestHit.specular = sphere.specular;
+				}
+			}
+		}
+		else
+		{
+			KDNode left = gNodes[node.left];
+			if (IntersectBox(left.min, left.max, ray))
+				Nodes[NumNodes++] = node.left;
+			KDNode right = gNodes[node.right];
+			if (IntersectBox(right.min, right.max, ray))
+				Nodes[NumNodes++] = node.right;
+		}
+	}
+	//	IntersectSphere(ray, bestHit, gSpheres[i]);
+	//IntersectGroundPlane(ray, bestHit);
+	return bestHit;
+}
+void TestArray()
+{
+
+
+
 }
 float3 Shade(inout Ray ray, RayHit hit)
 {
@@ -217,7 +308,6 @@ float3 Shade(inout Ray ray, RayHit hit)
 		return gCubeMap.SampleLevel(gsamLinearWrap, ray.direction, 0).xyz;
 	}
 }
-
 [numthreads(8, 8, 1)]
 void CS(int3 groupThreadID : SV_GroupID, int3 id : SV_DispatchThreadID)
 {
