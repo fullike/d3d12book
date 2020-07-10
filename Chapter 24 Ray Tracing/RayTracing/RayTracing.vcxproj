@@ -26,6 +26,7 @@
     <ClCompile Include="..\..\Common\GameTimer.cpp" />
     <ClCompile Include="..\..\Common\GeometryGenerator.cpp" />
     <ClCompile Include="..\..\Common\MathHelper.cpp" />
+    <ClCompile Include="KDTree.cpp" />
     <ClCompile Include="RayTracingApp.cpp" />
   </ItemGroup>
   <ItemGroup>
@@ -38,6 +39,7 @@
     <ClInclude Include="..\..\Common\GeometryGenerator.h" />
     <ClInclude Include="..\..\Common\MathHelper.h" />
     <ClInclude Include="..\..\Common\UploadBuffer.h" />
+    <ClInclude Include="KDTree.h" />
   </ItemGroup>
   <PropertyGroup Label="Globals">
     <VCProjectVersion>15.0</VCProjectVersion>

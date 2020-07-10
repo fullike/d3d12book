@@ -1,7 +1,7 @@
 #include "../../Common/d3dApp.h"
 #include "../../Common/Camera.h"
 #include "../../Common/UploadBuffer.h"
-
+#include "KDTree.h"
 using Microsoft::WRL::ComPtr;
 using namespace DirectX;
 
@@ -49,6 +49,7 @@ private:
 	virtual void OnMouseMove(WPARAM btnState, int x, int y)override;
 	void OnKeyboardInput(const GameTimer& gt);
 	void LoadTextures();
+	void LoadModel(const char* file, std::vector<Vertex>& Vertices, std::vector<Triangle>& Triangles);
 	void BuildBuffers();
 	void BuildRootSignature();
 	void BuildDescriptorHeaps();
@@ -223,7 +224,42 @@ void RayTracingApp::BuildDescriptorHeaps()
 	uavDesc.ViewDimension = D3D12_UAV_DIMENSION_TEXTURE2D;
 	uavDesc.Texture2D.MipSlice = 0;
 	md3dDevice->CreateUnorderedAccessView(mOutputBuffer.Get(), nullptr, &uavDesc, hDescriptor);
-
+}
+void RayTracingApp::LoadModel(const char* file, std::vector<Vertex>& Vertices, std::vector<Triangle>& Triangles)
+{
+	std::ifstream fin(file);
+	if (!fin)
+	{
+		MessageBox(0, L"Models/skull.txt not found.", 0, 0);
+		return;
+	}
+	UINT vcount = 0;
+	UINT tcount = 0;
+	std::string ignore;
+	fin >> ignore >> vcount;
+	fin >> ignore >> tcount;
+	fin >> ignore >> ignore >> ignore >> ignore;
+	Vertices.resize(vcount);
+	for (UINT i = 0; i < vcount; ++i)
+	{
+		Vertex& vertex = Vertices[i];
+		fin >> vertex.position.x >> vertex.position.y >> vertex.position.z;
+		fin >> vertex.normal.x >> vertex.normal.y >> vertex.normal.z;
+		// Model does not have texture coordinates, so just zero them out.
+		vertex.uv = { 0.0f, 0.0f };
+	}
+	fin >> ignore;
+	fin >> ignore;
+	fin >> ignore;
+//	mTriangles = std::make_unique<UploadBuffer<Triangle>>(md3dDevice.Get(), tcount, false);
+	Triangles.resize(tcount);
+	for (UINT i = 0; i < tcount; ++i)
+	{
+		Triangle& triangle = Triangles[i];
+		fin >> triangle.indices[0] >> triangle.indices[1] >> triangle.indices[2];
+	//	mTriangles->CopyData(i, triangle);
+	}
+	fin.close();
 }
 void RayTracingApp::BuildConstantBuffers()
 {
@@ -240,41 +276,17 @@ void RayTracingApp::BuildConstantBuffers()
 		sphere.specular = XMFLOAT3(MathHelper::RandF(), MathHelper::RandF(), MathHelper::RandF());
 		mSpheres->CopyData(i, sphere);
 	}
+	std::vector<Vertex> Vertices;
+	std::vector<Triangle> Triangles;
+	LoadModel("Models/car.txt", Vertices, Triangles);
+	mVertices = std::make_unique<UploadBuffer<Vertex>>(md3dDevice.Get(), Vertices.size(), false);
+	for (UINT i = 0; i < Vertices.size(); ++i)
+		mVertices->CopyData(i, Vertices[i]);
+	mTriangles = std::make_unique<UploadBuffer<Triangle>>(md3dDevice.Get(), Triangles.size(), false);
+	for (UINT i = 0; i < Triangles.size(); ++i)
+		mTriangles->CopyData(i, Triangles[i]);
 
-	std::ifstream fin("Models/car.txt");
-	if (!fin)
-	{
-		MessageBox(0, L"Models/skull.txt not found.", 0, 0);
-		return;
-	}
-	UINT vcount = 0;
-	UINT tcount = 0;
-	std::string ignore;
-	fin >> ignore >> vcount;
-	fin >> ignore >> tcount;
-	fin >> ignore >> ignore >> ignore >> ignore;
-	mVertices = std::make_unique<UploadBuffer<Vertex>>(md3dDevice.Get(), vcount, false);
-	for (UINT i = 0; i < vcount; ++i)
-	{
-		Vertex vertex;
-		fin >> vertex.position.x >> vertex.position.y >> vertex.position.z;
-		fin >> vertex.normal.x >> vertex.normal.y >> vertex.normal.z;
-		// Model does not have texture coordinates, so just zero them out.
-		vertex.uv = { 0.0f, 0.0f };
-		mVertices->CopyData(i, vertex);
-	}
-	fin >> ignore;
-	fin >> ignore;
-	fin >> ignore;
-	mTriangles = std::make_unique<UploadBuffer<Triangle>>(md3dDevice.Get(), tcount, false);
-	for (UINT i = 0; i < tcount; ++i)
-	{
-		Triangle triangle;
-		fin >> triangle.indices[0] >> triangle.indices[1] >> triangle.indices[2];
-		mTriangles->CopyData(i, triangle);
-	}
-	fin.close();
-	NumTriangles = tcount;
+	NumTriangles = Triangles.size();
 }
 void RayTracingApp::BuildShadersAndInputLayout()
 {
