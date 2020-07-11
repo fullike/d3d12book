@@ -234,7 +234,7 @@ RayHit Trace(Ray ray)
 RayHit Trace(Ray ray)
 {
 	uint NumNodes = 0;
-	uint Nodes[64];
+	uint Nodes[256];
 	Nodes[NumNodes++] = 0;
 	RayHit bestHit = CreateRayHit();
 	for (uint i = 0; i < NumNodes; i++)

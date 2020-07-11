@@ -280,7 +280,7 @@ void RayTracingApp::BuildConstantBuffers()
 	}
 	std::vector<Vertex> Vertices;
 	std::vector<Triangle> Triangles;
-	LoadModel("Models/car.txt", Vertices, Triangles);
+	LoadModel("Models/skull.txt", Vertices, Triangles);
 	mVertices = std::make_unique<UploadBuffer<Vertex>>(md3dDevice.Get(), Vertices.size(), false);
 	for (UINT i = 0; i < Vertices.size(); ++i)
 		mVertices->CopyData(i, Vertices[i]);

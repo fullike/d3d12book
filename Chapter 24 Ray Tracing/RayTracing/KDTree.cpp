@@ -2,19 +2,19 @@
 
 void KDNode::Split()
 {
-	if (triangles.size() <= 4)
+	if (triangles.size() <= 64)
 		return;
 	std::vector<uint> leftTris[3];
 	std::vector<uint> rightTris[3];
-	int MinDiff = triangles.size();
+	int MinSum = 0x7FFFFFFF;
 	int Best = -1;
 	for (int i = 0; i < 3; i++)
 	{
 		SplitForDimension(i, leftTris[i], rightTris[i]);
-		int Diff = abs(int(leftTris[i].size() - rightTris[i].size()));
-		if (MinDiff > Diff)
+		int Sum = leftTris[i].size() + rightTris[i].size();
+		if (MinSum > Sum)
 		{
-			MinDiff = Diff;
+			MinSum = Sum;
 			Best = i;
 		}
 	}
@@ -83,6 +83,10 @@ void KDTree::Build(std::vector<KDNode_GPU>& nodes, std::vector<uint>& indices)
 		gpu.box = node->bbox;
 		if (node->left.get() || node->right.get())
 		{
+			BBox leftBox = node->left->bbox;
+			BBox rightBox = node->right->bbox;
+
+
 			gpu.start = 0;
 			gpu.count = 0;
 			gpu.left = tmpNodes.size();
