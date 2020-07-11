@@ -64,6 +64,9 @@ private:
 	std::unique_ptr<UploadBuffer<Sphere>> mSpheres = nullptr;
 	std::unique_ptr<UploadBuffer<Vertex>> mVertices = nullptr;
 	std::unique_ptr<UploadBuffer<Triangle>> mTriangles = nullptr;
+	std::unique_ptr<UploadBuffer<KDNode_GPU>> mNodes = nullptr;
+	std::unique_ptr<UploadBuffer<uint>> mIndices = nullptr;
+
 	std::unique_ptr<KDTree> mKDTree = nullptr;
 	ComPtr<ID3D12Resource> mOutputBuffer = nullptr;
 	ComPtr<ID3D12RootSignature> mRootSignature = nullptr;
@@ -252,13 +255,11 @@ void RayTracingApp::LoadModel(const char* file, std::vector<Vertex>& Vertices, s
 	fin >> ignore;
 	fin >> ignore;
 	fin >> ignore;
-//	mTriangles = std::make_unique<UploadBuffer<Triangle>>(md3dDevice.Get(), tcount, false);
 	Triangles.resize(tcount);
 	for (UINT i = 0; i < tcount; ++i)
 	{
 		Triangle& triangle = Triangles[i];
 		fin >> triangle.indices[0] >> triangle.indices[1] >> triangle.indices[2];
-	//	mTriangles->CopyData(i, triangle);
 	}
 	fin.close();
 }
@@ -293,7 +294,16 @@ void RayTracingApp::BuildConstantBuffers()
 		Triangle& tri = Triangles[i];
 		mKDTree->AddTriangle(i, &Vertices[tri.indices[0]].position.x, &Vertices[tri.indices[1]].position.x, &Vertices[tri.indices[2]].position.x);
 	}
-	mKDTree->Build();
+	std::vector<KDNode_GPU> nodes;
+	std::vector<uint> indices;
+	mKDTree->Build(nodes, indices);
+	mNodes = std::make_unique<UploadBuffer<KDNode_GPU>>(md3dDevice.Get(), nodes.size(), false);
+	for (UINT i = 0; i < nodes.size(); ++i)
+		mNodes->CopyData(i, nodes[i]);
+	mIndices = std::make_unique<UploadBuffer<uint>>(md3dDevice.Get(), indices.size(), false);
+	for (UINT i = 0; i < indices.size(); ++i)
+		mIndices->CopyData(i, indices[i]);
+
 	NumTriangles = Triangles.size();
 }
 void RayTracingApp::BuildShadersAndInputLayout()
@@ -411,7 +421,8 @@ void RayTracingApp::Draw(const GameTimer& gt)
 	mCommandList->SetComputeRootShaderResourceView(1, mSpheres->Resource()->GetGPUVirtualAddress());
 	mCommandList->SetComputeRootShaderResourceView(2, mVertices->Resource()->GetGPUVirtualAddress());
 	mCommandList->SetComputeRootShaderResourceView(3, mTriangles->Resource()->GetGPUVirtualAddress());
-
+	mCommandList->SetComputeRootShaderResourceView(4, mNodes->Resource()->GetGPUVirtualAddress());
+	mCommandList->SetComputeRootShaderResourceView(5, mIndices->Resource()->GetGPUVirtualAddress());
 	CD3DX12_GPU_DESCRIPTOR_HANDLE hGpuDescriptor(mSrvDescriptorHeap->GetGPUDescriptorHandleForHeapStart());
 	
 	mCommandList->SetComputeRootDescriptorTable(6, hGpuDescriptor);
