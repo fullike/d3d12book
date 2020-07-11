@@ -64,6 +64,7 @@ private:
 	std::unique_ptr<UploadBuffer<Sphere>> mSpheres = nullptr;
 	std::unique_ptr<UploadBuffer<Vertex>> mVertices = nullptr;
 	std::unique_ptr<UploadBuffer<Triangle>> mTriangles = nullptr;
+	std::unique_ptr<KDTree> mKDTree = nullptr;
 	ComPtr<ID3D12Resource> mOutputBuffer = nullptr;
 	ComPtr<ID3D12RootSignature> mRootSignature = nullptr;
 	ComPtr<ID3D12DescriptorHeap> mSrvDescriptorHeap = nullptr;
@@ -285,7 +286,14 @@ void RayTracingApp::BuildConstantBuffers()
 	mTriangles = std::make_unique<UploadBuffer<Triangle>>(md3dDevice.Get(), Triangles.size(), false);
 	for (UINT i = 0; i < Triangles.size(); ++i)
 		mTriangles->CopyData(i, Triangles[i]);
-
+	
+	mKDTree = std::make_unique<KDTree>(Triangles.size());
+	for (int i = 0; i < Triangles.size(); i++)
+	{
+		Triangle& tri = Triangles[i];
+		mKDTree->AddTriangle(i, &Vertices[tri.indices[0]].position.x, &Vertices[tri.indices[1]].position.x, &Vertices[tri.indices[2]].position.x);
+	}
+	mKDTree->Build();
 	NumTriangles = Triangles.size();
 }
 void RayTracingApp::BuildShadersAndInputLayout()
