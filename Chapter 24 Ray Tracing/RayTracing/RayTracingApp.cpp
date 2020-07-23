@@ -72,6 +72,9 @@ private:
 	ComPtr<ID3D12RootSignature> mRootSignature = nullptr;
 	ComPtr<ID3D12DescriptorHeap> mSrvDescriptorHeap = nullptr;
 	ComPtr<ID3D12PipelineState> mPSO = nullptr;
+
+	const bool KDTree_Testing = false;
+
 	UINT mCbvSrvDescriptorSize = 0;
 	UINT NumTriangles;
 	Camera mCamera;
@@ -265,50 +268,61 @@ void RayTracingApp::LoadModel(const char* file, std::vector<Vertex>& Vertices, s
 }
 void RayTracingApp::BuildConstantBuffers()
 {
-	mPassCB = std::make_unique<UploadBuffer<PassConstants>>(md3dDevice.Get(), 1, true);
-	mSpheres = std::make_unique<UploadBuffer<Sphere>>(md3dDevice.Get(), 64, false);
-	for (int i = 0; i < 64; i++)
+	if (!KDTree_Testing)
 	{
-		int x = i % 8;
-		int y = i / 8;
-		Sphere sphere;
-		sphere.radius = MathHelper::RandF(1, 4);
-		sphere.position = XMFLOAT3(x * 8.f, sphere.radius, y * 8.f);
-		sphere.albedo = XMFLOAT3(MathHelper::RandF(), MathHelper::RandF(), MathHelper::RandF());
-		sphere.specular = XMFLOAT3(MathHelper::RandF(), MathHelper::RandF(), MathHelper::RandF());
-		mSpheres->CopyData(i, sphere);
+		mPassCB = std::make_unique<UploadBuffer<PassConstants>>(md3dDevice.Get(), 1, true);
+		mSpheres = std::make_unique<UploadBuffer<Sphere>>(md3dDevice.Get(), 64, false);
+		for (int i = 0; i < 64; i++)
+		{
+			int x = i % 8;
+			int y = i / 8;
+			Sphere sphere;
+			sphere.radius = MathHelper::RandF(1, 4);
+			sphere.position = XMFLOAT3(x * 8.f, sphere.radius, y * 8.f);
+			sphere.albedo = XMFLOAT3(MathHelper::RandF(), MathHelper::RandF(), MathHelper::RandF());
+			sphere.specular = XMFLOAT3(MathHelper::RandF(), MathHelper::RandF(), MathHelper::RandF());
+			mSpheres->CopyData(i, sphere);
+		}
 	}
-	std::vector<Vertex> Vertices;
-	std::vector<Triangle> Triangles;
-	LoadModel("Models/skull.txt", Vertices, Triangles);
-	mVertices = std::make_unique<UploadBuffer<Vertex>>(md3dDevice.Get(), Vertices.size(), false);
-	for (UINT i = 0; i < Vertices.size(); ++i)
-		mVertices->CopyData(i, Vertices[i]);
-	mTriangles = std::make_unique<UploadBuffer<Triangle>>(md3dDevice.Get(), Triangles.size(), false);
-	for (UINT i = 0; i < Triangles.size(); ++i)
-		mTriangles->CopyData(i, Triangles[i]);
-	
-	mKDTree = std::make_unique<KDTree>(Triangles.size());
-	for (int i = 0; i < Triangles.size(); i++)
+	else
 	{
-		Triangle& tri = Triangles[i];
-		mKDTree->AddTriangle(i, &Vertices[tri.indices[0]].position.x, &Vertices[tri.indices[1]].position.x, &Vertices[tri.indices[2]].position.x);
-	}
-	std::vector<KDNode_GPU> nodes;
-	std::vector<uint> indices;
-	mKDTree->Build(nodes, indices);
-	mNodes = std::make_unique<UploadBuffer<KDNode_GPU>>(md3dDevice.Get(), nodes.size(), false);
-	for (UINT i = 0; i < nodes.size(); ++i)
-		mNodes->CopyData(i, nodes[i]);
-	mIndices = std::make_unique<UploadBuffer<uint>>(md3dDevice.Get(), indices.size(), false);
-	for (UINT i = 0; i < indices.size(); ++i)
-		mIndices->CopyData(i, indices[i]);
+		std::vector<Vertex> Vertices;
+		std::vector<Triangle> Triangles;
+		LoadModel("Models/skull.txt", Vertices, Triangles);
+		mVertices = std::make_unique<UploadBuffer<Vertex>>(md3dDevice.Get(), Vertices.size(), false);
+		for (UINT i = 0; i < Vertices.size(); ++i)
+			mVertices->CopyData(i, Vertices[i]);
+		mTriangles = std::make_unique<UploadBuffer<Triangle>>(md3dDevice.Get(), Triangles.size(), false);
+		for (UINT i = 0; i < Triangles.size(); ++i)
+			mTriangles->CopyData(i, Triangles[i]);
 
-	NumTriangles = Triangles.size();
+		mKDTree = std::make_unique<KDTree>(Triangles.size());
+		for (int i = 0; i < Triangles.size(); i++)
+		{
+			Triangle& tri = Triangles[i];
+			mKDTree->AddTriangle(i, &Vertices[tri.indices[0]].position.x, &Vertices[tri.indices[1]].position.x, &Vertices[tri.indices[2]].position.x);
+		}
+		std::vector<KDNode_GPU> nodes;
+		std::vector<uint> indices;
+		mKDTree->Build(nodes, indices);
+		mNodes = std::make_unique<UploadBuffer<KDNode_GPU>>(md3dDevice.Get(), nodes.size(), false);
+		for (UINT i = 0; i < nodes.size(); ++i)
+			mNodes->CopyData(i, nodes[i]);
+		mIndices = std::make_unique<UploadBuffer<uint>>(md3dDevice.Get(), indices.size(), false);
+		for (UINT i = 0; i < indices.size(); ++i)
+			mIndices->CopyData(i, indices[i]);
+
+		NumTriangles = Triangles.size();
+	}
 }
 void RayTracingApp::BuildShadersAndInputLayout()
 {
-	mShaders["RayTracing"] = d3dUtil::CompileShader(L"Shaders\\RayTracing.hlsl", nullptr, "CS", "cs_5_0");
+	const D3D_SHADER_MACRO defines[] =
+	{
+		"KDTREE_TESTING", KDTree_Testing ? "1" : "0",
+		NULL, NULL
+	};
+	mShaders["RayTracing"] = d3dUtil::CompileShader(L"Shaders\\RayTracing.hlsl", defines, "CS", "cs_5_0");
 }
 void RayTracingApp::BuildPSOs()
 {
@@ -415,14 +429,16 @@ void RayTracingApp::Draw(const GameTimer& gt)
 	mCommandList->SetDescriptorHeaps(_countof(descriptorHeaps), descriptorHeaps);
 
 	mCommandList->SetComputeRootSignature(mRootSignature.Get());
-
 	mCommandList->SetComputeRootConstantBufferView(0, mPassCB->Resource()->GetGPUVirtualAddress());
-//	mCommandList->SetComputeRootConstantBufferView(1, mSpheres->Resource()->GetGPUVirtualAddress());
-	mCommandList->SetComputeRootShaderResourceView(1, mSpheres->Resource()->GetGPUVirtualAddress());
-	mCommandList->SetComputeRootShaderResourceView(2, mVertices->Resource()->GetGPUVirtualAddress());
-	mCommandList->SetComputeRootShaderResourceView(3, mTriangles->Resource()->GetGPUVirtualAddress());
-	mCommandList->SetComputeRootShaderResourceView(4, mNodes->Resource()->GetGPUVirtualAddress());
-	mCommandList->SetComputeRootShaderResourceView(5, mIndices->Resource()->GetGPUVirtualAddress());
+	if (!KDTree_Testing)
+		mCommandList->SetComputeRootShaderResourceView(1, mSpheres->Resource()->GetGPUVirtualAddress());
+	else
+	{
+		mCommandList->SetComputeRootShaderResourceView(2, mVertices->Resource()->GetGPUVirtualAddress());
+		mCommandList->SetComputeRootShaderResourceView(3, mTriangles->Resource()->GetGPUVirtualAddress());
+		mCommandList->SetComputeRootShaderResourceView(4, mNodes->Resource()->GetGPUVirtualAddress());
+		mCommandList->SetComputeRootShaderResourceView(5, mIndices->Resource()->GetGPUVirtualAddress());
+	}
 	CD3DX12_GPU_DESCRIPTOR_HANDLE hGpuDescriptor(mSrvDescriptorHeap->GetGPUDescriptorHandleForHeapStart());
 	
 	mCommandList->SetComputeRootDescriptorTable(6, hGpuDescriptor);

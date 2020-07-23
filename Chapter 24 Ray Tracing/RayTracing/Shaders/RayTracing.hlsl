@@ -202,14 +202,6 @@ bool IntersectTriangle_MT97(Ray ray, float3 vert0, float3 vert1, float3 vert2, i
 RayHit Trace(Ray ray)
 {
 	RayHit bestHit = CreateRayHit();
-	for (int i = 0; i < NumSpheres; i++)
-		IntersectSphere(ray, bestHit, gSpheres[i]);
-	IntersectGroundPlane(ray, bestHit);
-	return bestHit;
-}
-RayHit Trace(Ray ray)
-{
-	RayHit bestHit = CreateRayHit();
 	for (int i = 0; i < NumTriangles; i++)
 	{
 		Triangle tri = gTriangles[i];
@@ -233,10 +225,11 @@ RayHit Trace(Ray ray)
 }*/
 RayHit Trace(Ray ray)
 {
+	RayHit bestHit = CreateRayHit();
+#if KDTREE_TESTING
 	uint NumNodes = 0;
 	uint Nodes[256];
 	Nodes[NumNodes++] = 0;
-	RayHit bestHit = CreateRayHit();
 	for (uint i = 0; i < NumNodes; i++)
 	{
 		KDNode node = gNodes[Nodes[i]];
@@ -270,8 +263,11 @@ RayHit Trace(Ray ray)
 				Nodes[NumNodes++] = node.right;
 		}
 	}
-	//	IntersectSphere(ray, bestHit, gSpheres[i]);
-	//IntersectGroundPlane(ray, bestHit);
+#else
+	for (int i = 0; i < NumSpheres; i++)
+		IntersectSphere(ray, bestHit, gSpheres[i]);
+	IntersectGroundPlane(ray, bestHit);
+#endif
 	return bestHit;
 }
 void TestArray()
