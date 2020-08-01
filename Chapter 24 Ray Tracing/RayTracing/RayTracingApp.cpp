@@ -5,7 +5,7 @@
 using Microsoft::WRL::ComPtr;
 using namespace DirectX;
 
-struct PassConstants
+struct RTPassConstants
 {
 	XMMATRIX View;
 	XMMATRIX InvView;
@@ -14,9 +14,16 @@ struct PassConstants
 	XMMATRIX ViewProj;
 	XMMATRIX InvViewProj;
 	XMFLOAT4 DirectionalLight;
+	float Seed;
 	int NumSpheres;
 	int NumTriangles;
 };
+
+struct AccPassConstants
+{
+	int NumSamples;
+};
+
 struct Sphere
 {
 	XMFLOAT3 position;
@@ -60,7 +67,10 @@ private:
 	std::unordered_map<std::string, std::unique_ptr<Texture>> mTextures;
 	std::unordered_map<std::string, ComPtr<ID3DBlob>> mShaders;
 	std::unordered_map<std::string, ComPtr<ID3D12PipelineState>> mPSOs;
-	std::unique_ptr<UploadBuffer<PassConstants>> mPassCB = nullptr;
+	
+	std::unique_ptr<UploadBuffer<RTPassConstants>> mPassCB = nullptr;
+	std::unique_ptr<UploadBuffer<AccPassConstants>> mAccPassCB = nullptr;
+
 	std::unique_ptr<UploadBuffer<Sphere>> mSpheres = nullptr;
 	std::unique_ptr<UploadBuffer<Vertex>> mVertices = nullptr;
 	std::unique_ptr<UploadBuffer<Triangle>> mTriangles = nullptr;
@@ -70,11 +80,13 @@ private:
 	std::unique_ptr<KDTree> mKDTree = nullptr;
 	ComPtr<ID3D12Resource> mOutputBuffer = nullptr;
 	ComPtr<ID3D12RootSignature> mRootSignature = nullptr;
+
 	ComPtr<ID3D12DescriptorHeap> mSrvDescriptorHeap = nullptr;
-	ComPtr<ID3D12PipelineState> mPSO = nullptr;
+	ComPtr<ID3D12DescriptorHeap> mAccDescriptorHeap = nullptr;
+
+	AccPassConstants mAcc;
 
 	const bool KDTree_Testing = false;
-
 	UINT mCbvSrvDescriptorSize = 0;
 	UINT NumTriangles;
 	Camera mCamera;
@@ -201,36 +213,55 @@ void RayTracingApp::BuildRootSignature()
 }
 void RayTracingApp::BuildDescriptorHeaps()
 {
-	//
-	// Create the SRV heap.
-	//
-	D3D12_DESCRIPTOR_HEAP_DESC srvHeapDesc = {};
-	srvHeapDesc.NumDescriptors = 2;
-	srvHeapDesc.Type = D3D12_DESCRIPTOR_HEAP_TYPE_CBV_SRV_UAV;
-	srvHeapDesc.Flags = D3D12_DESCRIPTOR_HEAP_FLAG_SHADER_VISIBLE;
-	ThrowIfFailed(md3dDevice->CreateDescriptorHeap(&srvHeapDesc, IID_PPV_ARGS(&mSrvDescriptorHeap)));
-	//
-	// Fill out the heap with actual descriptors.
-	//
-	CD3DX12_CPU_DESCRIPTOR_HANDLE hDescriptor(mSrvDescriptorHeap->GetCPUDescriptorHandleForHeapStart());
-	auto skyTex = mTextures["skyCubeMap"]->Resource;
+	{
+		D3D12_DESCRIPTOR_HEAP_DESC srvHeapDesc = {};
+		srvHeapDesc.NumDescriptors = 2;
+		srvHeapDesc.Type = D3D12_DESCRIPTOR_HEAP_TYPE_CBV_SRV_UAV;
+		srvHeapDesc.Flags = D3D12_DESCRIPTOR_HEAP_FLAG_SHADER_VISIBLE;
+		ThrowIfFailed(md3dDevice->CreateDescriptorHeap(&srvHeapDesc, IID_PPV_ARGS(&mSrvDescriptorHeap)));
+		//
+		// Fill out the heap with actual descriptors.
+		//
+		CD3DX12_CPU_DESCRIPTOR_HANDLE hDescriptor(mSrvDescriptorHeap->GetCPUDescriptorHandleForHeapStart());
+		auto skyTex = mTextures["skyCubeMap"]->Resource;
 
-	D3D12_SHADER_RESOURCE_VIEW_DESC srvDesc = {};
-	srvDesc.Shader4ComponentMapping = D3D12_DEFAULT_SHADER_4_COMPONENT_MAPPING;
-	srvDesc.ViewDimension = D3D12_SRV_DIMENSION_TEXTURECUBE;
-	srvDesc.TextureCube.MostDetailedMip = 0;
-	srvDesc.TextureCube.MipLevels = skyTex->GetDesc().MipLevels;
-	srvDesc.TextureCube.ResourceMinLODClamp = 0.0f;
-	srvDesc.Format = skyTex->GetDesc().Format;
-	md3dDevice->CreateShaderResourceView(skyTex.Get(), &srvDesc, hDescriptor);
+		D3D12_SHADER_RESOURCE_VIEW_DESC srvDesc = {};
+		srvDesc.Shader4ComponentMapping = D3D12_DEFAULT_SHADER_4_COMPONENT_MAPPING;
+		srvDesc.ViewDimension = D3D12_SRV_DIMENSION_TEXTURECUBE;
+		srvDesc.TextureCube.MostDetailedMip = 0;
+		srvDesc.TextureCube.MipLevels = skyTex->GetDesc().MipLevels;
+		srvDesc.TextureCube.ResourceMinLODClamp = 0.0f;
+		srvDesc.Format = skyTex->GetDesc().Format;
+		md3dDevice->CreateShaderResourceView(skyTex.Get(), &srvDesc, hDescriptor);
 
 
-	hDescriptor.Offset(1, mCbvSrvDescriptorSize);
-	D3D12_UNORDERED_ACCESS_VIEW_DESC uavDesc = {};
-	uavDesc.Format = DXGI_FORMAT_R8G8B8A8_UNORM;
-	uavDesc.ViewDimension = D3D12_UAV_DIMENSION_TEXTURE2D;
-	uavDesc.Texture2D.MipSlice = 0;
-	md3dDevice->CreateUnorderedAccessView(mOutputBuffer.Get(), nullptr, &uavDesc, hDescriptor);
+		hDescriptor.Offset(1, mCbvSrvDescriptorSize);
+		D3D12_UNORDERED_ACCESS_VIEW_DESC uavDesc = {};
+		uavDesc.Format = DXGI_FORMAT_R8G8B8A8_UNORM;
+		uavDesc.ViewDimension = D3D12_UAV_DIMENSION_TEXTURE2D;
+		uavDesc.Texture2D.MipSlice = 0;
+		md3dDevice->CreateUnorderedAccessView(mOutputBuffer.Get(), nullptr, &uavDesc, hDescriptor);
+	}
+	{
+		D3D12_DESCRIPTOR_HEAP_DESC srvHeapDesc = {};
+		srvHeapDesc.NumDescriptors = 1;
+		srvHeapDesc.Type = D3D12_DESCRIPTOR_HEAP_TYPE_CBV_SRV_UAV;
+		srvHeapDesc.Flags = D3D12_DESCRIPTOR_HEAP_FLAG_SHADER_VISIBLE;
+		ThrowIfFailed(md3dDevice->CreateDescriptorHeap(&srvHeapDesc, IID_PPV_ARGS(&mAccDescriptorHeap)));
+		//
+		// Fill out the heap with actual descriptors.
+		//
+		CD3DX12_CPU_DESCRIPTOR_HANDLE hDescriptor(mAccDescriptorHeap->GetCPUDescriptorHandleForHeapStart());
+
+		D3D12_SHADER_RESOURCE_VIEW_DESC srvDesc = {};
+		srvDesc.Shader4ComponentMapping = D3D12_DEFAULT_SHADER_4_COMPONENT_MAPPING;
+		srvDesc.Format = DXGI_FORMAT_R8G8B8A8_UNORM;
+		srvDesc.ViewDimension = D3D12_SRV_DIMENSION_TEXTURE2D;
+		srvDesc.Texture2D.MostDetailedMip = 0;
+		srvDesc.Texture2D.MipLevels = 1;
+		srvDesc.Texture2D.ResourceMinLODClamp = 0.0f;
+		md3dDevice->CreateShaderResourceView(mOutputBuffer.Get(), &srvDesc, hDescriptor);
+	}
 }
 void RayTracingApp::LoadModel(const char* file, std::vector<Vertex>& Vertices, std::vector<Triangle>& Triangles)
 {
@@ -268,9 +299,10 @@ void RayTracingApp::LoadModel(const char* file, std::vector<Vertex>& Vertices, s
 }
 void RayTracingApp::BuildConstantBuffers()
 {
+	mPassCB = std::make_unique<UploadBuffer<RTPassConstants>>(md3dDevice.Get(), 1, true);
+	mAccPassCB = std::make_unique<UploadBuffer<AccPassConstants>>(md3dDevice.Get(), 1, true);
 	if (!KDTree_Testing)
 	{
-		mPassCB = std::make_unique<UploadBuffer<PassConstants>>(md3dDevice.Get(), 1, true);
 		mSpheres = std::make_unique<UploadBuffer<Sphere>>(md3dDevice.Get(), 64, false);
 		for (int i = 0; i < 64; i++)
 		{
@@ -289,10 +321,10 @@ void RayTracingApp::BuildConstantBuffers()
 		std::vector<Vertex> Vertices;
 		std::vector<Triangle> Triangles;
 		LoadModel("Models/skull.txt", Vertices, Triangles);
-		mVertices = std::make_unique<UploadBuffer<Vertex>>(md3dDevice.Get(), Vertices.size(), false);
+		mVertices = std::make_unique<UploadBuffer<Vertex>>(md3dDevice.Get(), (UINT)Vertices.size(), false);
 		for (UINT i = 0; i < Vertices.size(); ++i)
 			mVertices->CopyData(i, Vertices[i]);
-		mTriangles = std::make_unique<UploadBuffer<Triangle>>(md3dDevice.Get(), Triangles.size(), false);
+		mTriangles = std::make_unique<UploadBuffer<Triangle>>(md3dDevice.Get(), (UINT)Triangles.size(), false);
 		for (UINT i = 0; i < Triangles.size(); ++i)
 			mTriangles->CopyData(i, Triangles[i]);
 
@@ -305,14 +337,13 @@ void RayTracingApp::BuildConstantBuffers()
 		std::vector<KDNode_GPU> nodes;
 		std::vector<uint> indices;
 		mKDTree->Build(nodes, indices);
-		mNodes = std::make_unique<UploadBuffer<KDNode_GPU>>(md3dDevice.Get(), nodes.size(), false);
+		mNodes = std::make_unique<UploadBuffer<KDNode_GPU>>(md3dDevice.Get(), (UINT)nodes.size(), false);
 		for (UINT i = 0; i < nodes.size(); ++i)
 			mNodes->CopyData(i, nodes[i]);
-		mIndices = std::make_unique<UploadBuffer<uint>>(md3dDevice.Get(), indices.size(), false);
+		mIndices = std::make_unique<UploadBuffer<uint>>(md3dDevice.Get(), (UINT)indices.size(), false);
 		for (UINT i = 0; i < indices.size(); ++i)
 			mIndices->CopyData(i, indices[i]);
-
-		NumTriangles = Triangles.size();
+		NumTriangles = (UINT)Triangles.size();
 	}
 }
 void RayTracingApp::BuildShadersAndInputLayout()
@@ -323,6 +354,8 @@ void RayTracingApp::BuildShadersAndInputLayout()
 		NULL, NULL
 	};
 	mShaders["RayTracing"] = d3dUtil::CompileShader(L"Shaders\\RayTracing.hlsl", defines, "CS", "cs_5_0");
+	mShaders["accVS"] = d3dUtil::CompileShader(L"Shaders\\RayTracing.hlsl", defines, "VS", "vs_5_0");
+	mShaders["accPS"] = d3dUtil::CompileShader(L"Shaders\\RayTracing.hlsl", defines, "PS", "ps_5_0");
 }
 void RayTracingApp::BuildPSOs()
 {
@@ -335,6 +368,49 @@ void RayTracingApp::BuildPSOs()
 	};
 	computePsoDesc.Flags = D3D12_PIPELINE_STATE_FLAG_NONE;
 	ThrowIfFailed(md3dDevice->CreateComputePipelineState(&computePsoDesc, IID_PPV_ARGS(&mPSOs["RayTracing"])));
+
+	D3D12_RENDER_TARGET_BLEND_DESC transparencyBlendDesc;
+	transparencyBlendDesc.BlendEnable = true;
+	transparencyBlendDesc.LogicOpEnable = false;
+	transparencyBlendDesc.SrcBlend = D3D12_BLEND_SRC_ALPHA;
+	transparencyBlendDesc.DestBlend = D3D12_BLEND_INV_SRC_ALPHA;
+	transparencyBlendDesc.BlendOp = D3D12_BLEND_OP_ADD;
+	transparencyBlendDesc.SrcBlendAlpha = D3D12_BLEND_ONE;
+	transparencyBlendDesc.DestBlendAlpha = D3D12_BLEND_ZERO;
+	transparencyBlendDesc.BlendOpAlpha = D3D12_BLEND_OP_ADD;
+	transparencyBlendDesc.LogicOp = D3D12_LOGIC_OP_NOOP;
+	transparencyBlendDesc.RenderTargetWriteMask = D3D12_COLOR_WRITE_ENABLE_ALL;
+
+	D3D12_GRAPHICS_PIPELINE_STATE_DESC accPsoDesc;
+	ZeroMemory(&accPsoDesc, sizeof(D3D12_GRAPHICS_PIPELINE_STATE_DESC));
+	accPsoDesc.pRootSignature = mRootSignature.Get();
+	accPsoDesc.VS =
+	{
+		reinterpret_cast<BYTE*>(mShaders["accVS"]->GetBufferPointer()),
+		mShaders["accVS"]->GetBufferSize()
+	};
+	accPsoDesc.PS =
+	{
+		reinterpret_cast<BYTE*>(mShaders["accPS"]->GetBufferPointer()),
+		mShaders["accPS"]->GetBufferSize()
+	};
+	accPsoDesc.RasterizerState = CD3DX12_RASTERIZER_DESC(D3D12_DEFAULT);
+	accPsoDesc.BlendState = CD3DX12_BLEND_DESC(D3D12_DEFAULT);
+	accPsoDesc.DepthStencilState = CD3DX12_DEPTH_STENCIL_DESC(D3D12_DEFAULT);
+
+	accPsoDesc.DepthStencilState.DepthEnable = false;
+	accPsoDesc.DepthStencilState.DepthWriteMask = D3D12_DEPTH_WRITE_MASK_ZERO;
+	accPsoDesc.DepthStencilState.DepthFunc = D3D12_COMPARISON_FUNC_ALWAYS;
+
+	accPsoDesc.SampleMask = UINT_MAX;
+	accPsoDesc.PrimitiveTopologyType = D3D12_PRIMITIVE_TOPOLOGY_TYPE_TRIANGLE;
+	accPsoDesc.NumRenderTargets = 1;
+	accPsoDesc.RTVFormats[0] = mBackBufferFormat;
+	accPsoDesc.SampleDesc.Count = m4xMsaaState ? 4 : 1;
+	accPsoDesc.SampleDesc.Quality = m4xMsaaState ? (m4xMsaaQuality - 1) : 0;
+	accPsoDesc.DSVFormat = mDepthStencilFormat;
+	accPsoDesc.BlendState.RenderTarget[0] = transparencyBlendDesc;
+	ThrowIfFailed(md3dDevice->CreateGraphicsPipelineState(&accPsoDesc, IID_PPV_ARGS(&mPSOs["Accumulated"])));
 }
 void RayTracingApp::OnResize()
 {
@@ -386,16 +462,19 @@ void RayTracingApp::OnKeyboardInput(const GameTimer& gt)
 
 	if (GetAsyncKeyState('D') & 0x8000)
 		mCamera.Strafe(10.0f*dt);
-
-	mCamera.UpdateViewMatrix();
 }
 void RayTracingApp::Update(const GameTimer& gt)
 {
 	OnKeyboardInput(gt);
-
+	if (mCamera.IsViewDirty())
+		mAcc.NumSamples = 1;
+	else
+		mAcc.NumSamples++;
 	mCamera.UpdateViewMatrix();
 
-	PassConstants passConstants;
+	mAccPassCB->CopyData(0, mAcc);
+
+	RTPassConstants passConstants;
 
 	XMMATRIX view = mCamera.GetView();
 	XMMATRIX proj = mCamera.GetProj();
@@ -411,6 +490,7 @@ void RayTracingApp::Update(const GameTimer& gt)
 	passConstants.InvProj = (invProj);
 	passConstants.InvViewProj = (invViewProj);
 	passConstants.DirectionalLight = XMFLOAT4(0.707f, -0.707f, 0, 1);
+	passConstants.Seed = 1000.f + MathHelper::RandF() * 1000.f;
 	passConstants.NumSpheres = 64;
 	passConstants.NumTriangles = NumTriangles;
 	mPassCB->CopyData(0, passConstants);
@@ -447,21 +527,39 @@ void RayTracingApp::Draw(const GameTimer& gt)
 
 	mCommandList->Dispatch((UINT)ceilf(mClientWidth / 8.f), (UINT)ceilf(mClientHeight / 8.f), 1);
 
-	mCommandList->ResourceBarrier(1, &CD3DX12_RESOURCE_BARRIER::Transition(CurrentBackBuffer(),
-		D3D12_RESOURCE_STATE_PRESENT, D3D12_RESOURCE_STATE_COPY_DEST));
+	mCommandList->ResourceBarrier(1, &CD3DX12_RESOURCE_BARRIER::Transition(CurrentBackBuffer(), D3D12_RESOURCE_STATE_PRESENT, D3D12_RESOURCE_STATE_RENDER_TARGET));
+
+
+	mCommandList->RSSetViewports(1, &mScreenViewport);
+	mCommandList->RSSetScissorRects(1, &mScissorRect);
+	mCommandList->OMSetRenderTargets(1, &CurrentBackBufferView(), true, nullptr);
+
+	{
+		mCommandList->SetPipelineState(mPSOs["Accumulated"].Get());
+
+		ID3D12DescriptorHeap* descriptorHeaps[] = { mAccDescriptorHeap.Get() };
+		mCommandList->SetDescriptorHeaps(_countof(descriptorHeaps), descriptorHeaps);
+		mCommandList->SetGraphicsRootSignature(mRootSignature.Get());
+		mCommandList->SetGraphicsRootConstantBufferView(0, mAccPassCB->Resource()->GetGPUVirtualAddress());
+
+		CD3DX12_GPU_DESCRIPTOR_HANDLE hGpuDescriptor(mAccDescriptorHeap->GetGPUDescriptorHandleForHeapStart());
+
+		mCommandList->SetGraphicsRootDescriptorTable(6, hGpuDescriptor);
+
+
+		// Null-out IA stage since we build the vertex off the SV_VertexID in the shader.
+		mCommandList->IASetVertexBuffers(0, 1, nullptr);
+		mCommandList->IASetIndexBuffer(nullptr);
+		mCommandList->IASetPrimitiveTopology(D3D_PRIMITIVE_TOPOLOGY_TRIANGLELIST);
+		mCommandList->DrawInstanced(6, 1, 0, 0);
+	}
 
 	// Schedule to copy the data to the default buffer to the readback buffer.
-	mCommandList->ResourceBarrier(1, &CD3DX12_RESOURCE_BARRIER::Transition(mOutputBuffer.Get(),
-		D3D12_RESOURCE_STATE_COMMON, D3D12_RESOURCE_STATE_COPY_SOURCE));
+//	mCommandList->ResourceBarrier(1, &CD3DX12_RESOURCE_BARRIER::Transition(mOutputBuffer.Get(), D3D12_RESOURCE_STATE_COMMON, D3D12_RESOURCE_STATE_COPY_SOURCE));
+//	mCommandList->CopyResource(CurrentBackBuffer(), mOutputBuffer.Get());
+//	mCommandList->ResourceBarrier(1, &CD3DX12_RESOURCE_BARRIER::Transition(mOutputBuffer.Get(), D3D12_RESOURCE_STATE_COPY_SOURCE, D3D12_RESOURCE_STATE_COMMON));
 
-	mCommandList->CopyResource(CurrentBackBuffer(), mOutputBuffer.Get());
-
-	mCommandList->ResourceBarrier(1, &CD3DX12_RESOURCE_BARRIER::Transition(mOutputBuffer.Get(),
-		D3D12_RESOURCE_STATE_COPY_SOURCE, D3D12_RESOURCE_STATE_COMMON));
-
-	mCommandList->ResourceBarrier(1, &CD3DX12_RESOURCE_BARRIER::Transition(CurrentBackBuffer(),
-		D3D12_RESOURCE_STATE_COPY_DEST, D3D12_RESOURCE_STATE_PRESENT));
-
+	mCommandList->ResourceBarrier(1, &CD3DX12_RESOURCE_BARRIER::Transition(CurrentBackBuffer(), D3D12_RESOURCE_STATE_RENDER_TARGET, D3D12_RESOURCE_STATE_PRESENT));
 
 	// Done recording commands.
 	ThrowIfFailed(mCommandList->Close());

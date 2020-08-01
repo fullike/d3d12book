@@ -1,4 +1,5 @@
 TextureCube gCubeMap : register(t0);
+Texture2D gTexture2D : register(t0);
 RWTexture2D<float4> gOutput : register(u0);
 
 SamplerState gsamPointWrap        : register(s0);
@@ -9,7 +10,7 @@ SamplerState gsamAnisotropicWrap  : register(s4);
 SamplerState gsamAnisotropicClamp : register(s5);
 
 // Constant data that varies per material.
-cbuffer cbPass : register(b0)
+cbuffer rtPass : register(b0)
 {
 	float4x4 gView;
 	float4x4 gInvView;
@@ -18,9 +19,15 @@ cbuffer cbPass : register(b0)
 	float4x4 gViewProj;
 	float4x4 gInvViewProj;
 	float4 gDirectionalLight;
+	float _Seed;
 	int NumSpheres;
 	int NumTriangles;
 };
+cbuffer accPass : register(b0)
+{
+	int NumSamples;
+};
+
 struct Ray
 {
 	float3 origin;
@@ -67,6 +74,40 @@ StructuredBuffer<Vertex> gVertices : register(t2);
 StructuredBuffer<Triangle> gTriangles : register(t3);
 StructuredBuffer<KDNode> gNodes : register(t4);
 StructuredBuffer<uint> gIndices : register(t5);
+
+static float2 _Pixel;
+static const float PI = 3.14159265358979;
+float rand()
+{
+	float result = frac(sin(_Seed / 100.0f * dot(_Pixel, float2(12.9898f, 78.233f))) * 43758.5453f);
+	_Seed += 1.0f;
+	return result;
+}
+float3x3 GetTangentSpace(float3 normal)
+{
+	// Choose a helper vector for the cross product
+	float3 helper = float3(1, 0, 0);
+	if (abs(normal.x) > 0.99f)
+		helper = float3(0, 0, 1);
+	// Generate vectors
+	float3 tangent = normalize(cross(normal, helper));
+	float3 binormal = normalize(cross(normal, tangent));
+	return float3x3(tangent, binormal, normal);
+}
+float3 SampleHemisphere(float3 normal)
+{
+	// Uniformly sample hemisphere direction
+	float cosTheta = rand();
+	float sinTheta = sqrt(max(0.0f, 1.0f - cosTheta * cosTheta));
+	float phi = 2 * PI * rand();
+	float3 tangentSpaceDir = float3(cos(phi) * sinTheta, sin(phi) * sinTheta, cosTheta);
+	// Transform direction to world space
+	return mul(tangentSpaceDir, GetTangentSpace(normal));
+}
+float sdot(float3 x, float3 y, float f = 1.0f)
+{
+	return saturate(dot(x, y) * f);
+}
 
 Ray CreateRay(float3 origin, float3 direction)
 {
@@ -270,32 +311,17 @@ RayHit Trace(Ray ray)
 #endif
 	return bestHit;
 }
-void TestArray()
-{
 
-
-
-}
 float3 Shade(inout Ray ray, RayHit hit)
 {
 	if (hit.distance < 1.#INF)
 	{
-		float3 specular = hit.specular;
-		// Reflect the ray and multiply energy with specular reflection
+		// Diffuse shading
 		ray.origin = hit.position + hit.normal * 0.001f;
-		ray.direction = reflect(ray.direction, hit.normal);
-		ray.energy *= specular;
-		// pure specular metal Return nothing
-		// return float3(0.0f, 0.0f, 0.0f);
-		bool shadow = false;
-		Ray shadowRay = CreateRay(hit.position + hit.normal * 0.001f, -1 * gDirectionalLight.xyz);
-		RayHit shadowHit = Trace(shadowRay);
-		if (shadowHit.distance != 1.#INF)
-		{
-			return float3(0.0f, 0.0f, 0.0f);
-		}
-		float3 albedo = hit.albedo;
-		return saturate(dot(hit.normal, gDirectionalLight.xyz) * -1) * gDirectionalLight.w * albedo;
+		ray.direction = SampleHemisphere(hit.normal);
+	//	ray.direction = reflect(ray.direction, hit.normal);
+		ray.energy *= 2 * hit.albedo * sdot(hit.normal, ray.direction);
+		return 0.0f;
 	}
 	else
 	{
@@ -304,14 +330,18 @@ float3 Shade(inout Ray ray, RayHit hit)
 		return gCubeMap.SampleLevel(gsamLinearWrap, ray.direction, 0).xyz;
 	}
 }
+
+
+
 [numthreads(8, 8, 1)]
 void CS(int3 groupThreadID : SV_GroupID, int3 id : SV_DispatchThreadID)
 {
+	_Pixel = id.xy;
 	// Get the dimensions of the RenderTexture
 	uint width, height;
 	gOutput.GetDimensions(width, height);
 	// Transform pixel to [-1,1] range
-	float2 uv = float2((id.xy + float2(0.5f, 0.5f)) / float2(width, height) * 2.0f - 1.0f);
+	float2 uv = float2((id.xy + float2(rand(), rand())) / float2(width, height) * 2.0f - 1.0f);
 	// Get a ray for the UVs
 	Ray ray = CreateCameraRay(float2(uv.x,-uv.y));
 	// Write some colors
@@ -324,4 +354,39 @@ void CS(int3 groupThreadID : SV_GroupID, int3 id : SV_DispatchThreadID)
 			break;
 	}
 	gOutput[id.xy] = float4(result, 1);
+}
+
+
+static const float2 gTexCoords[6] =
+{
+	float2(0.0f, 1.0f),
+	float2(0.0f, 0.0f),
+	float2(1.0f, 0.0f),
+	float2(0.0f, 1.0f),
+	float2(1.0f, 0.0f),
+	float2(1.0f, 1.0f)
+};
+
+struct VertexOut
+{
+	float4 PosH    : SV_POSITION;
+	float2 TexC    : TEXCOORD;
+};
+
+VertexOut VS(uint vid : SV_VertexID)
+{
+	VertexOut vout;
+
+	vout.TexC = gTexCoords[vid];
+
+	// Map [0,1]^2 to NDC space.
+	vout.PosH = float4(2.0f*vout.TexC.x - 1.0f, 1.0f - 2.0f*vout.TexC.y, 0.0f, 1.0f);
+
+	return vout;
+}
+
+float4 PS(VertexOut pin) : SV_Target
+{
+	float4 c = gTexture2D.SampleLevel(gsamPointWrap, pin.TexC, 0.0f);
+	return float4(c.rgb, 1.0 / NumSamples);
 }
